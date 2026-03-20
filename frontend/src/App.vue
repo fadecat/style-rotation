@@ -75,8 +75,15 @@ const valuationModal = reactive({
   open: false,
   loading: false,
 });
+const exportModal = reactive({
+  open: false,
+  scale: "2",
+  exporting: false,
+  copying: false,
+});
 const valuationStatus = ref(null);
 const valuationStatusError = ref("");
+const exportMessage = ref("");
 let syncStatusRequestId = 0;
 let valuationStatusRequestId = 0;
 let analyzeRequestId = 0;
@@ -1194,6 +1201,90 @@ function handleResize() {
   chartInstance?.resize();
 }
 
+function openExportModal() {
+  if (!response.value) {
+    errorMessage.value = "当前没有可导出的图表数据";
+    return;
+  }
+  exportModal.open = true;
+  exportMessage.value = "";
+}
+
+function closeExportModal() {
+  exportModal.open = false;
+  exportModal.exporting = false;
+  exportModal.copying = false;
+  exportMessage.value = "";
+}
+
+function buildChartExportPayload() {
+  const chart = ensureChart();
+  if (!chart) {
+    throw new Error("图表尚未准备完成");
+  }
+
+  const leftPart = response.value.meta.left_symbol || form.leftSymbol || "left";
+  const rightPart = response.value.meta.right_symbol || form.rightSymbol || "right";
+  const startPart = response.value.meta.start_date || form.startDate || "start";
+  const endPart = response.value.meta.end_date || form.endDate || "end";
+  const fileName = `style-rotation_${leftPart}_${rightPart}_${startPart}_${endPart}.png`;
+  const pixelRatio = Number(exportModal.scale || 2);
+  const dataUrl = chart.getDataURL({
+    type: "png",
+    pixelRatio,
+    backgroundColor: "#fffaf3",
+  });
+  return { fileName, dataUrl, pixelRatio };
+}
+
+function exportChartImage() {
+  try {
+    exportModal.exporting = true;
+    const { fileName, dataUrl, pixelRatio } = buildChartExportPayload();
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    exportMessage.value = `已导出 PNG，清晰度 ${pixelRatio}x`;
+  } catch (error) {
+    errorMessage.value = error.message || "导出图表失败";
+  } finally {
+    exportModal.exporting = false;
+  }
+}
+
+async function copyChartImageToClipboard() {
+  if (!window.ClipboardItem || !navigator.clipboard?.write) {
+    errorMessage.value = "当前浏览器不支持图片复制到剪贴板";
+    return;
+  }
+  try {
+    exportModal.copying = true;
+    const { dataUrl, pixelRatio } = buildChartExportPayload();
+    const blob = await fetch(dataUrl).then((response) => response.blob());
+    await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+    exportMessage.value = `已复制图表到剪贴板，清晰度 ${pixelRatio}x`;
+  } catch (error) {
+    errorMessage.value = error.message || "复制图表失败";
+  } finally {
+    exportModal.copying = false;
+  }
+}
+
+watch(
+  () => exportModal.open,
+  (open) => {
+    if (!open) {
+      return;
+    }
+    exportModal.scale = "2";
+    exportMessage.value = "";
+  },
+  { immediate: false }
+);
+
 watch(
   () => response.value,
   async () => {
@@ -1269,6 +1360,11 @@ onBeforeUnmount(() => {
         <span class="side-action-kicker">估值导入</span>
         <strong>上传估值数据</strong>
         <small>导入 PE / PB / 股息率 CSV</small>
+      </button>
+      <button class="side-action-card side-action-export" :disabled="loading.analysis || !response" @click="openExportModal">
+        <span class="side-action-kicker">图表导出</span>
+        <strong>{{ loading.analysis ? "图表更新中" : "导出或复制图表" }}</strong>
+        <small>{{ response ? "支持 PNG 下载和复制到剪贴板" : "当前暂无可导出的图表" }}</small>
       </button>
     </aside>
 
@@ -1350,6 +1446,45 @@ onBeforeUnmount(() => {
     <section class="charts-grid">
       <article class="chart-card chart-card-composite">
         <div ref="chartRef" class="chart-canvas chart-canvas-composite"></div>
+      </article>
+    </section>
+
+    <section v-if="exportModal.open" class="modal-shell" @click.self="closeExportModal">
+      <article class="modal-panel export-modal-panel">
+        <div class="modal-header">
+          <div>
+            <span class="section-kicker">Chart Export</span>
+            <h2>导出或复制当前图表</h2>
+          </div>
+          <button class="modal-close" @click="closeExportModal">关闭</button>
+        </div>
+
+        <div class="modal-grid export-modal-grid">
+          <div class="field">
+            <label>清晰度</label>
+            <select v-model="exportModal.scale" :disabled="exportModal.exporting || exportModal.copying">
+              <option value="2">2x 高清</option>
+              <option value="3">3x 超清</option>
+            </select>
+          </div>
+          <div class="modal-target">
+            <span>当前图表范围</span>
+            <strong>{{ response ? `${response.meta.left_symbol} vs ${response.meta.right_symbol}` : "暂无图表" }}</strong>
+            <strong>{{ response ? `${response.meta.start_date} 至 ${response.meta.end_date}` : "" }}</strong>
+          </div>
+        </div>
+
+        <div class="valuation-upload-actions">
+          <button class="upload-button" :disabled="exportModal.exporting || exportModal.copying" @click="exportChartImage">
+            {{ exportModal.exporting ? "导出中..." : "下载 PNG" }}
+          </button>
+          <button class="upload-button secondary-upload-button" :disabled="exportModal.exporting || exportModal.copying" @click="copyChartImageToClipboard">
+            {{ exportModal.copying ? "复制中..." : "复制到剪贴板" }}
+          </button>
+        </div>
+
+        <p class="export-help">2x 适合普通分享，3x 适合高分屏或文档插图。</p>
+        <p v-if="exportMessage" class="upload-success">{{ exportMessage }}</p>
       </article>
     </section>
 

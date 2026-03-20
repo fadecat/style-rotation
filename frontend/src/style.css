@@ -231,6 +231,12 @@ select {
     radial-gradient(circle at top right, rgba(255, 255, 255, 0.16), transparent 26%);
 }
 
+.side-action-export {
+  background:
+    linear-gradient(180deg, rgba(18, 111, 92, 0.98), rgba(12, 79, 66, 0.96)),
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.16), transparent 26%);
+}
+
 .side-action-kicker {
   display: block;
   font-size: 11px;
@@ -288,6 +294,12 @@ select {
   cursor: default;
 }
 
+.secondary-upload-button {
+  background: rgba(22, 32, 50, 0.08);
+  color: var(--ink);
+  border: 1px solid rgba(22, 32, 50, 0.12);
+}
+
 .upload-success {
   margin: 14px 0 0;
   color: #0b6b41;
@@ -321,6 +333,10 @@ select {
     radial-gradient(circle at top right, rgba(242, 189, 95, 0.14), transparent 24%);
   border: 1px solid rgba(255, 255, 255, 0.74);
   box-shadow: 0 24px 64px rgba(15, 23, 42, 0.22);
+}
+
+.export-modal-panel {
+  width: min(720px, calc(100vw - 32px));
 }
 
 .modal-header {
@@ -379,6 +395,10 @@ select {
 
 .sync-meta-grid {
   margin-top: 16px;
+}
+
+.export-modal-grid {
+  margin-top: 18px;
 }
 
 .valuation-status-block {
@@ -451,6 +471,12 @@ select {
 .sync-status-card strong {
   font-size: 18px;
   line-height: 1.35;
+}
+
+.export-help {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .sync-status-flag {
