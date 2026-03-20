@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from datetime import date
+import logging
+
+from fastapi import Depends, FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .config import Settings, get_settings
+from .database import get_session, create_session_factory
+from .models import Instrument
+from .schemas import MarketDataSyncRequest
+from .services.market_data import DataSyncError, init_database, seed_default_data, sync_market_data
+from .services.style_rotation import InsufficientDataError, StyleRotationParams, build_style_rotation_response
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+
+
+def create_app(database_url: str | None = None, seed_demo: bool = True) -> FastAPI:
+    settings: Settings = get_settings(database_url)
+    engine, session_factory = create_session_factory(settings.database_url)
+    init_database(engine)
+    if seed_demo:
+        seed_default_data(session_factory)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        engine.dispose()
+
+    app = FastAPI(title=settings.app_name, lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.state.settings = settings
+    app.state.engine = engine
+    app.state.session_factory = session_factory
+
+    @app.get("/api/health")
+    def healthcheck() -> dict[str, object]:
+        return {"code": 200, "message": "success", "data": {"status": "ok"}}
+
+    @app.get("/api/instruments")
+    def list_instruments(
+        asset_type: str | None = Query(default=None),
+        keyword: str | None = Query(default=None),
+        is_active: bool = Query(default=True),
+        session: Session = Depends(get_session),
+    ) -> dict[str, object]:
+        query = select(Instrument).order_by(Instrument.symbol.asc())
+        query = query.where(Instrument.is_active == is_active)
+        if asset_type:
+            query = query.where(Instrument.asset_type == asset_type)
+        if keyword:
+            like_value = f"%{keyword}%"
+            query = query.where((Instrument.symbol.like(like_value)) | (Instrument.name.like(like_value)))
+
+        items = [
+            {
+                "symbol": item.symbol,
+                "name": item.name,
+                "market": item.market,
+                "asset_type": item.asset_type,
+            }
+            for item in session.scalars(query).all()
+        ]
+        return {"code": 200, "message": "success", "data": {"items": items}}
+
+    @app.post("/api/market-data/sync")
+    def sync_endpoint(
+        payload: MarketDataSyncRequest,
+        session: Session = Depends(get_session),
+    ) -> dict[str, object]:
+        try:
+            data = sync_market_data(session, payload)
+        except DataSyncError as exc:
+            return JSONResponse(status_code=502, content={"code": 502, "message": str(exc), "data": None})
+        return {"code": 200, "message": "sync success", "data": data}
+
+    @app.get("/api/style-rotation")
+    def style_rotation(
+        left_symbol: str = Query(default=settings.default_left_symbol),
+        right_symbol: str = Query(default=settings.default_right_symbol),
+        start_date: date | None = Query(default=None),
+        end_date: date | None = Query(default=None),
+        return_window: int = Query(default=250, ge=1),
+        ma_window: int = Query(default=20, ge=1),
+        quantile_window_min: int = Query(default=20, ge=1),
+        session: Session = Depends(get_session),
+    ) -> dict[str, object]:
+        if left_symbol == right_symbol:
+            return JSONResponse(
+                status_code=400,
+                content={"code": 400, "message": "left_symbol and right_symbol must differ", "data": None},
+            )
+
+        params = StyleRotationParams(
+            left_symbol=left_symbol,
+            right_symbol=right_symbol,
+            start_date=start_date.isoformat() if start_date else None,
+            end_date=end_date.isoformat() if end_date else None,
+            return_window=return_window,
+            ma_window=ma_window,
+            quantile_window_min=quantile_window_min,
+        )
+
+        try:
+            data = build_style_rotation_response(session, params)
+        except InsufficientDataError:
+            return JSONResponse(status_code=404, content={"code": 404, "message": "insufficient data", "data": None})
+
+        return {"code": 200, "message": "success", "data": data}
+
+    return app
+
+
+app = create_app()
