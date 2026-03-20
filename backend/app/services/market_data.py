@@ -41,6 +41,15 @@ class SyncItemResult:
     range: dict[str, str]
 
 
+@dataclass(frozen=True)
+class MarketDataStatus:
+    exists: bool
+    row_count: int
+    earliest_date: str | None
+    latest_date: str | None
+    sources: list[str]
+
+
 class DataSyncError(RuntimeError):
     pass
 
@@ -393,6 +402,28 @@ def sync_market_data(session: Session, payload: MarketDataSyncRequest) -> dict[s
         [instrument.symbol for instrument in payload.symbols],
     )
     return {"source": payload.source, "items": items}
+
+
+def get_market_data_status(session: Session, symbol: str) -> dict[str, object]:
+    row_count, earliest_date, latest_date = session.execute(
+        select(
+            func.count(DailyPrice.id),
+            func.min(DailyPrice.trade_date),
+            func.max(DailyPrice.trade_date),
+        ).where(DailyPrice.symbol == symbol)
+    ).one()
+    sources = session.scalars(
+        select(DailyPrice.source).where(DailyPrice.symbol == symbol).distinct().order_by(DailyPrice.source.asc())
+    ).all()
+
+    status = MarketDataStatus(
+        exists=bool(row_count),
+        row_count=int(row_count or 0),
+        earliest_date=earliest_date.isoformat() if earliest_date else None,
+        latest_date=latest_date.isoformat() if latest_date else None,
+        sources=list(sources),
+    )
+    return {"symbol": symbol, **asdict(status)}
 
 
 def seed_default_data(session_factory: sessionmaker[Session]) -> None:

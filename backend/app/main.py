@@ -14,7 +14,7 @@ from .config import Settings, get_settings
 from .database import get_session, create_session_factory
 from .models import Instrument
 from .schemas import MarketDataSyncRequest
-from .services.market_data import DataSyncError, init_database, seed_default_data, sync_market_data
+from .services.market_data import DataSyncError, get_market_data_status, init_database, seed_default_data, sync_market_data
 from .services.style_rotation import InsufficientDataError, StyleRotationParams, build_style_rotation_response
 from .services.valuation_upload import SUPPORTED_METRICS, ValuationUploadError, get_valuation_status, upload_valuation_csv
 
@@ -88,6 +88,22 @@ def create_app(database_url: str | None = None, seed_demo: bool = True) -> FastA
         except DataSyncError as exc:
             return JSONResponse(status_code=502, content={"code": 502, "message": str(exc), "data": None})
         return {"code": 200, "message": "sync success", "data": data}
+
+    @app.get("/api/market-data/status")
+    def market_data_status_endpoint(
+        symbol: str = Query(...),
+        session: Session = Depends(get_session),
+    ) -> dict[str, object]:
+        normalized_symbol = symbol.strip()
+        instrument = session.scalar(select(Instrument).where(Instrument.symbol == normalized_symbol))
+        if instrument is None:
+            return JSONResponse(
+                status_code=400,
+                content={"code": 400, "message": f"unknown symbol: {normalized_symbol}", "data": None},
+            )
+
+        data = get_market_data_status(session, normalized_symbol)
+        return {"code": 200, "message": "success", "data": data}
 
     @app.post("/api/valuations/upload")
     async def upload_valuation_endpoint(

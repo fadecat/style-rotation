@@ -265,6 +265,15 @@ select {
   font-size: 18px;
 }
 
+.sync-date-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 16px;
+}
+
+.sync-meta-grid {
+  margin-top: 16px;
+}
+
 .valuation-status-block {
   margin-top: 18px;
   padding: 18px;
@@ -302,6 +311,10 @@ select {
   margin-top: 14px;
 }
 
+.sync-status-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .status-card {
   padding: 16px;
   border-radius: 18px;
@@ -326,6 +339,37 @@ select {
   color: var(--ink);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.sync-status-card strong {
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.sync-status-flag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 10px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sync-status-fresh {
+  background: rgba(11, 107, 65, 0.12);
+  color: #0b6b41;
+}
+
+.sync-status-stale {
+  background: rgba(217, 164, 65, 0.18);
+  color: #9a5b00;
+}
+
+.sync-status-missing {
+  background: rgba(184, 76, 61, 0.12);
+  color: #8c2f23;
 }
 
 .summary-grid {
@@ -427,6 +471,11 @@ select {
 
   .modal-grid,
   .status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sync-date-grid,
+  .sync-status-grid {
     grid-template-columns: 1fr;
   }
 }

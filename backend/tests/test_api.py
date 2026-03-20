@@ -389,6 +389,18 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(metrics["dividend_yield"]["exists"], False)
         self.assertEqual(metrics["dividend_yield"]["row_count"], 0)
 
+    def test_market_data_status_endpoint_returns_ranges(self) -> None:
+        response = self.client.get("/api/market-data/status", params={"symbol": "AAA"})
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["symbol"], "AAA")
+        self.assertEqual(data["exists"], True)
+        self.assertGreater(data["row_count"], 0)
+        self.assertEqual(data["earliest_date"], "2022-01-03")
+        self.assertEqual(data["latest_date"], "2026-03-20")
+        self.assertEqual(data["sources"], ["demo"])
+
 
 if __name__ == "__main__":
     unittest.main()

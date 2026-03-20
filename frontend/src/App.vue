@@ -57,12 +57,27 @@ const valuationUploadMessage = ref("");
 const valuationUpload = reactive({
   symbol: "",
 });
+const syncSelection = reactive({
+  leftSymbol: "",
+  rightSymbol: "",
+});
+const syncModal = reactive({
+  open: false,
+  loading: false,
+});
+const syncStatus = reactive({
+  left: null,
+  right: null,
+});
+const syncStatusError = ref("");
+const syncMessage = ref("");
 const valuationModal = reactive({
   open: false,
   loading: false,
 });
 const valuationStatus = ref(null);
 const valuationStatusError = ref("");
+let syncStatusRequestId = 0;
 let valuationStatusRequestId = 0;
 
 const chartRef = ref(null);
@@ -74,6 +89,8 @@ const dividendFileInputRef = ref(null);
 const visibleInstruments = computed(() => instruments.value.filter((item) => VISIBLE_INSTRUMENT_SYMBOLS.has(item.symbol)));
 const leftInstrument = computed(() => visibleInstruments.value.find((item) => item.symbol === form.leftSymbol));
 const rightInstrument = computed(() => visibleInstruments.value.find((item) => item.symbol === form.rightSymbol));
+const syncLeftInstrument = computed(() => visibleInstruments.value.find((item) => item.symbol === syncSelection.leftSymbol));
+const syncRightInstrument = computed(() => visibleInstruments.value.find((item) => item.symbol === syncSelection.rightSymbol));
 const indexInstruments = computed(() => visibleInstruments.value.filter((item) => item.asset_type === "INDEX"));
 const selectedValuationInstrument = computed(() =>
   indexInstruments.value.find((item) => item.symbol === valuationUpload.symbol)
@@ -88,6 +105,22 @@ const VALUATION_METRICS = [
   { key: "pb", label: "PB" },
   { key: "dividend_yield", label: "股息率" },
 ];
+const DATE_RANGE_PRESETS = [
+  { key: "custom", label: "自定义" },
+  { key: "1m", label: "最近1个月" },
+  { key: "3m", label: "最近3个月" },
+  { key: "6m", label: "最近6个月" },
+  { key: "ytd", label: "年初至今" },
+  { key: "1y", label: "最近1年" },
+  { key: "3y", label: "最近3年" },
+  { key: "5y", label: "最近5年" },
+  { key: "10y", label: "最近10年" },
+  { key: "20y", label: "最近20年" },
+];
+const dateRangeSelection = reactive({
+  analysis: "custom",
+  sync: "custom",
+});
 
 function matchesKeywords(name, keywords) {
   return keywords.some((keyword) => name.includes(keyword));
@@ -114,6 +147,22 @@ function buildInstrumentGroups(side) {
 
 const leftInstrumentGroups = computed(() => buildInstrumentGroups("left"));
 const rightInstrumentGroups = computed(() => buildInstrumentGroups("right"));
+const syncStatusCards = computed(() => [
+  {
+    side: "left",
+    title: "左侧标的",
+    instrument: syncLeftInstrument.value,
+    status: syncStatus.left,
+    accent: LEFT_SERIES_COLOR,
+  },
+  {
+    side: "right",
+    title: "右侧标的",
+    instrument: syncRightInstrument.value,
+    status: syncStatus.right,
+    accent: RIGHT_SERIES_COLOR,
+  },
+]);
 
 function flattenInstrumentGroups(groups) {
   return groups.flatMap((group) => group.items);
@@ -158,6 +207,148 @@ function formatRange(status) {
     return "暂无数据";
   }
   return `${status.earliest_date} 至 ${status.latest_date}`;
+}
+
+function formatSourceList(status) {
+  if (!status?.sources?.length) {
+    return "暂无";
+  }
+  return status.sources.join(", ");
+}
+
+function getLatestTradingDate(baseDate = new Date()) {
+  const tradingDate = new Date(baseDate);
+  const weekday = tradingDate.getDay();
+  if (weekday === 6) {
+    tradingDate.setDate(tradingDate.getDate() - 1);
+  } else if (weekday === 0) {
+    tradingDate.setDate(tradingDate.getDate() - 2);
+  }
+  tradingDate.setHours(0, 0, 0, 0);
+  return tradingDate;
+}
+
+function formatDateToIso(value) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseIsoDate(value) {
+  if (!value) {
+    return new Date();
+  }
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, (month || 1) - 1, day || 1);
+}
+
+function subtractMonths(value, months) {
+  const target = new Date(value);
+  const originalDay = target.getDate();
+  target.setDate(1);
+  target.setMonth(target.getMonth() - months);
+  const maxDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(originalDay, maxDay));
+  return target;
+}
+
+function subtractYears(value, years) {
+  const target = new Date(value);
+  const originalMonth = target.getMonth();
+  target.setFullYear(target.getFullYear() - years);
+  if (target.getMonth() !== originalMonth) {
+    target.setDate(0);
+  }
+  return target;
+}
+
+function countWeekdayGap(startIso, endIso) {
+  if (!startIso || !endIso || startIso >= endIso) {
+    return 0;
+  }
+  const cursor = new Date(`${startIso}T00:00:00`);
+  const end = new Date(`${endIso}T00:00:00`);
+  let gap = 0;
+  cursor.setDate(cursor.getDate() + 1);
+  while (cursor <= end) {
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) {
+      gap += 1;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return gap;
+}
+
+const latestTradingDateIso = computed(() => formatDateToIso(getLatestTradingDate()));
+
+function getPresetStartDate(endIso, presetKey) {
+  const endDate = parseIsoDate(endIso || formatDateToIso(new Date()));
+  let startDate = null;
+  if (presetKey === "1m") {
+    startDate = subtractMonths(endDate, 1);
+  } else if (presetKey === "3m") {
+    startDate = subtractMonths(endDate, 3);
+  } else if (presetKey === "6m") {
+    startDate = subtractMonths(endDate, 6);
+  } else if (presetKey === "ytd") {
+    startDate = new Date(endDate.getFullYear(), 0, 1);
+  } else if (presetKey === "1y") {
+    startDate = subtractYears(endDate, 1);
+  } else if (presetKey === "3y") {
+    startDate = subtractYears(endDate, 3);
+  } else if (presetKey === "5y") {
+    startDate = subtractYears(endDate, 5);
+  } else if (presetKey === "10y") {
+    startDate = subtractYears(endDate, 10);
+  } else if (presetKey === "20y") {
+    startDate = subtractYears(endDate, 20);
+  }
+  return startDate ? formatDateToIso(startDate) : null;
+}
+
+function applyDateRangePreset(scope) {
+  const target = scope === "analysis" ? form : latestSyncWindow;
+  const presetKey = dateRangeSelection[scope];
+  if (presetKey === "custom") {
+    return;
+  }
+  const fallbackEndDate = formatDateToIso(new Date());
+  if (!target.endDate) {
+    target.endDate = fallbackEndDate;
+  }
+  const startDate = getPresetStartDate(target.endDate, presetKey);
+  if (startDate) {
+    target.startDate = startDate;
+  }
+}
+
+function markCustomDateRange(scope) {
+  dateRangeSelection[scope] = "custom";
+}
+
+function getSyncFreshness(status) {
+  if (!status?.exists || !status.latest_date) {
+    return {
+      level: "missing",
+      label: "缺失，建议同步",
+      detail: `目标最新交易日：${latestTradingDateIso.value}`,
+    };
+  }
+  if (status.latest_date >= latestTradingDateIso.value) {
+    return {
+      level: "fresh",
+      label: "已最新",
+      detail: `已覆盖到 ${status.latest_date}`,
+    };
+  }
+  const lagDays = countWeekdayGap(status.latest_date, latestTradingDateIso.value);
+  return {
+    level: "stale",
+    label: "建议更新",
+    detail: `比最新交易日 ${latestTradingDateIso.value} 落后 ${lagDays} 个交易日`,
+  };
 }
 
 function buildMetricSubtitle(metricLabel, leftLabel, rightLabel) {
@@ -253,6 +444,12 @@ async function fetchInstruments() {
     if (!rightCandidates.some((item) => item.symbol === form.rightSymbol)) {
       form.rightSymbol = rightCandidates[0]?.symbol ?? "";
     }
+    if (!leftCandidates.some((item) => item.symbol === syncSelection.leftSymbol)) {
+      syncSelection.leftSymbol = form.leftSymbol || leftCandidates[0]?.symbol || "";
+    }
+    if (!rightCandidates.some((item) => item.symbol === syncSelection.rightSymbol)) {
+      syncSelection.rightSymbol = form.rightSymbol || rightCandidates[0]?.symbol || "";
+    }
     if (!indexInstruments.value.some((item) => item.symbol === valuationUpload.symbol)) {
       valuationUpload.symbol = "";
     }
@@ -288,6 +485,72 @@ async function analyze() {
     renderChart();
   } finally {
     loading.analysis = false;
+  }
+}
+
+function openSyncModal() {
+  syncModal.open = true;
+  syncMessage.value = "";
+  syncStatusError.value = "";
+  if (!syncSelection.leftSymbol) {
+    syncSelection.leftSymbol = form.leftSymbol || flattenInstrumentGroups(leftInstrumentGroups.value)[0]?.symbol || "";
+  }
+  if (!syncSelection.rightSymbol) {
+    syncSelection.rightSymbol = form.rightSymbol || flattenInstrumentGroups(rightInstrumentGroups.value)[0]?.symbol || "";
+  }
+}
+
+function closeSyncModal() {
+  syncModal.open = false;
+  syncModal.loading = false;
+  syncStatus.left = null;
+  syncStatus.right = null;
+  syncStatusError.value = "";
+  syncMessage.value = "";
+}
+
+async function fetchSyncStatus() {
+  if (!syncLeftInstrument.value || !syncRightInstrument.value) {
+    syncStatus.left = null;
+    syncStatus.right = null;
+    syncStatusError.value = "请先在弹窗中选择要同步的左右标的";
+    return;
+  }
+  if (syncLeftInstrument.value.symbol === syncRightInstrument.value.symbol) {
+    syncStatus.left = null;
+    syncStatus.right = null;
+    syncStatusError.value = "同步左右标的不能相同";
+    return;
+  }
+  const requestId = ++syncStatusRequestId;
+  syncModal.loading = true;
+  syncStatusError.value = "";
+  try {
+    const [{ data: leftData }, { data: rightData }] = await Promise.all([
+      axios.get(`${API_BASE}/api/market-data/status`, { params: { symbol: syncLeftInstrument.value.symbol } }),
+      axios.get(`${API_BASE}/api/market-data/status`, { params: { symbol: syncRightInstrument.value.symbol } }),
+    ]);
+    if (
+      requestId !== syncStatusRequestId ||
+      !syncModal.open ||
+      syncLeftInstrument.value?.symbol !== leftData.data.symbol ||
+      syncRightInstrument.value?.symbol !== rightData.data.symbol
+    ) {
+      return;
+    }
+    syncStatus.left = leftData.data;
+    syncStatus.right = rightData.data;
+  } catch (error) {
+    if (requestId !== syncStatusRequestId || !syncModal.open) {
+      return;
+    }
+    syncStatus.left = null;
+    syncStatus.right = null;
+    syncStatusError.value = error.response?.data?.message ?? "无法加载价格数据状态";
+  } finally {
+    if (requestId === syncStatusRequestId) {
+      syncModal.loading = false;
+    }
   }
 }
 
@@ -394,26 +657,36 @@ async function uploadValuationFile(metricType, event) {
 }
 
 async function syncData() {
-  if (!leftInstrument.value || !rightInstrument.value) {
-    errorMessage.value = "同步前请先加载并选择标的";
+  if (!syncLeftInstrument.value || !syncRightInstrument.value) {
+    errorMessage.value = "请先在同步弹窗中选择左右标的";
+    return;
+  }
+  if (syncLeftInstrument.value.symbol === syncRightInstrument.value.symbol) {
+    errorMessage.value = "同步左右标的不能相同";
     return;
   }
   if (
     latestSyncWindow.source === "tencent" &&
-    [leftInstrument.value, rightInstrument.value].some((item) => item.asset_type === "ETF")
+    [syncLeftInstrument.value, syncRightInstrument.value].some((item) => item.asset_type === "ETF")
   ) {
     errorMessage.value = "腾讯数据源当前只支持指数，请改选指数标的";
     return;
   }
   loading.sync = true;
   errorMessage.value = "";
+  syncMessage.value = "";
   try {
-    await axios.post(`${API_BASE}/api/market-data/sync`, {
-      symbols: [leftInstrument.value, rightInstrument.value],
+    const { data } = await axios.post(`${API_BASE}/api/market-data/sync`, {
+      symbols: [syncLeftInstrument.value, syncRightInstrument.value],
       source: latestSyncWindow.source,
       start_date: latestSyncWindow.startDate,
       end_date: latestSyncWindow.endDate,
     });
+    const items = data.data?.items ?? [];
+    syncMessage.value = items.length
+      ? items.map((item) => `${item.symbol}: ${item.inserted + item.updated} 行`).join(" | ")
+      : "同步完成";
+    await fetchSyncStatus();
     await analyze();
   } catch (error) {
     errorMessage.value = error.response?.data?.message ?? "同步失败";
@@ -905,6 +1178,17 @@ watch(
 );
 
 watch(
+  () => [syncModal.open, syncSelection.leftSymbol, syncSelection.rightSymbol],
+  async ([open]) => {
+    if (!open) {
+      return;
+    }
+    await fetchSyncStatus();
+  },
+  { immediate: false }
+);
+
+watch(
   () => [valuationModal.open, valuationUpload.symbol],
   async ([open, symbol]) => {
     if (!open) {
@@ -938,7 +1222,7 @@ onBeforeUnmount(() => {
         </p>
       </div>
       <div class="hero-actions">
-        <button class="ghost-button" :disabled="loading.sync" @click="syncData">
+        <button class="ghost-button" :disabled="loading.sync || loading.instruments" @click="openSyncModal">
           {{ loading.sync ? "同步中..." : "同步数据" }}
         </button>
         <button class="ghost-button" :disabled="loading.instruments" @click="openValuationModal">估值上传</button>
@@ -970,24 +1254,20 @@ onBeforeUnmount(() => {
         </select>
       </div>
       <div class="field">
+        <label>快捷范围</label>
+        <select v-model="dateRangeSelection.analysis" @change="applyDateRangePreset('analysis')">
+          <option v-for="preset in DATE_RANGE_PRESETS" :key="`analysis-${preset.key}`" :value="preset.key">
+            {{ preset.label }}
+          </option>
+        </select>
+      </div>
+      <div class="field">
         <label>开始日期</label>
-        <input v-model="form.startDate" type="date" />
+        <input v-model="form.startDate" type="date" @change="markCustomDateRange('analysis')" />
       </div>
       <div class="field">
         <label>结束日期</label>
-        <input v-model="form.endDate" type="date" />
-      </div>
-      <div class="field">
-        <label>同步来源</label>
-        <input value="Tencent" type="text" disabled />
-      </div>
-      <div class="field">
-        <label>同步开始</label>
-        <input v-model="latestSyncWindow.startDate" type="date" />
-      </div>
-      <div class="field">
-        <label>同步结束</label>
-        <input v-model="latestSyncWindow.endDate" type="date" />
+        <input v-model="form.endDate" type="date" @change="markCustomDateRange('analysis')" />
       </div>
     </section>
 
@@ -1020,6 +1300,109 @@ onBeforeUnmount(() => {
     <section class="charts-grid">
       <article class="chart-card chart-card-composite">
         <div ref="chartRef" class="chart-canvas chart-canvas-composite"></div>
+      </article>
+    </section>
+
+    <section v-if="syncModal.open" class="modal-shell" @click.self="closeSyncModal">
+      <article class="modal-panel">
+        <div class="modal-header">
+          <div>
+            <span class="section-kicker">Market Sync</span>
+            <h2>价格数据同步</h2>
+          </div>
+          <button class="modal-close" @click="closeSyncModal">关闭</button>
+        </div>
+
+        <div class="modal-grid">
+          <div class="field">
+            <label>左侧同步标的</label>
+            <select v-model="syncSelection.leftSymbol" :disabled="loading.instruments || syncModal.loading">
+              <optgroup v-for="group in leftInstrumentGroups" :key="`sync-left-${group.label}`" :label="group.label">
+                <option v-for="item in group.items" :key="item.symbol" :value="item.symbol">
+                  {{ item.symbol }} / {{ item.name }}
+                </option>
+              </optgroup>
+            </select>
+          </div>
+          <div class="field">
+            <label>右侧同步标的</label>
+            <select v-model="syncSelection.rightSymbol" :disabled="loading.instruments || syncModal.loading">
+              <optgroup v-for="group in rightInstrumentGroups" :key="`sync-right-${group.label}`" :label="group.label">
+                <option v-for="item in group.items" :key="item.symbol" :value="item.symbol">
+                  {{ item.symbol }} / {{ item.name }}
+                </option>
+              </optgroup>
+            </select>
+          </div>
+        </div>
+
+        <div class="modal-grid sync-meta-grid">
+          <div class="field">
+            <label>同步来源</label>
+            <input value="Tencent" type="text" disabled />
+          </div>
+          <div class="modal-target">
+            <span>当前同步标的</span>
+            <strong>{{ syncLeftInstrument ? `${syncLeftInstrument.symbol} / ${syncLeftInstrument.name}` : "未选择" }}</strong>
+            <strong>{{ syncRightInstrument ? `${syncRightInstrument.symbol} / ${syncRightInstrument.name}` : "未选择" }}</strong>
+          </div>
+        </div>
+
+        <div class="modal-grid sync-date-grid">
+          <div class="field">
+            <label>快捷范围</label>
+            <select v-model="dateRangeSelection.sync" @change="applyDateRangePreset('sync')">
+              <option v-for="preset in DATE_RANGE_PRESETS" :key="`sync-${preset.key}`" :value="preset.key">
+                {{ preset.label }}
+              </option>
+            </select>
+          </div>
+          <div class="field">
+            <label>同步开始</label>
+            <input v-model="latestSyncWindow.startDate" type="date" @change="markCustomDateRange('sync')" />
+          </div>
+          <div class="field">
+            <label>同步结束</label>
+            <input v-model="latestSyncWindow.endDate" type="date" @change="markCustomDateRange('sync')" />
+          </div>
+        </div>
+
+        <div class="valuation-status-block">
+          <div class="status-header">
+            <strong>数据库已有价格数据</strong>
+            <span v-if="syncModal.loading">读取中...</span>
+          </div>
+          <p v-if="syncStatusError" class="status-error">{{ syncStatusError }}</p>
+          <div class="status-grid sync-status-grid">
+            <article
+              v-for="card in syncStatusCards"
+              :key="card.side"
+              class="status-card sync-status-card"
+              :style="{ borderColor: `${card.accent}33` }"
+            >
+              <span>{{ card.title }}</span>
+              <strong :style="{ color: card.accent }">
+                {{ card.instrument ? `${card.instrument.symbol} / ${card.instrument.name}` : "未选择" }}
+              </strong>
+              <p class="sync-status-flag" :class="`sync-status-${getSyncFreshness(card.status).level}`">
+                {{ getSyncFreshness(card.status).label }}
+              </p>
+              <p>{{ getSyncFreshness(card.status).detail }}</p>
+              <p>是否存在：{{ card.status?.exists ? "已存在" : "不存在" }}</p>
+              <p>条数：{{ card.status?.row_count ?? 0 }}</p>
+              <p>范围：{{ formatRange(card.status) }}</p>
+              <p>来源：{{ formatSourceList(card.status) }}</p>
+            </article>
+          </div>
+        </div>
+
+        <div class="valuation-upload-actions">
+          <button class="upload-button" :disabled="loading.sync || syncModal.loading" @click="syncData">
+            {{ loading.sync ? "同步中..." : "开始同步" }}
+          </button>
+        </div>
+
+        <p v-if="syncMessage" class="upload-success">{{ syncMessage }}</p>
       </article>
     </section>
 
