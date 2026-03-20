@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_INSTRUMENTS = [
     InstrumentInput(symbol="399376", name="国证小盘成长", market="CN", asset_type="INDEX"),
     InstrumentInput(symbol="399373", name="国证大盘价值", market="CN", asset_type="INDEX"),
+    InstrumentInput(symbol="000852", name="中证1000", market="CN", asset_type="INDEX"),
+    InstrumentInput(symbol="000922", name="中证红利", market="CN", asset_type="INDEX"),
     InstrumentInput(symbol="159915", name="创业板ETF", market="CN", asset_type="ETF"),
     InstrumentInput(symbol="510300", name="沪深300ETF", market="CN", asset_type="ETF"),
     InstrumentInput(symbol="588000", name="科创50ETF", market="CN", asset_type="ETF"),
