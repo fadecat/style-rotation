@@ -208,6 +208,16 @@ select {
   font-weight: 700;
 }
 
+.upload-target {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.upload-target strong {
+  color: var(--ink);
+}
+
 .hidden-input {
   display: none;
 }
@@ -278,7 +288,7 @@ select {
 
 .chart-card-composite {
   padding: 16px;
-  min-height: 860px;
+  min-height: 1180px;
   background:
     linear-gradient(180deg, rgba(255, 252, 247, 0.96), rgba(249, 243, 233, 0.94)),
     radial-gradient(circle at top right, rgba(242, 189, 95, 0.14), transparent 24%);
@@ -291,7 +301,7 @@ select {
 }
 
 .chart-canvas-composite {
-  height: 824px;
+  height: 1144px;
 }
 
 @media (max-width: 960px) {
@@ -337,10 +347,10 @@ select {
   }
 
   .chart-card-composite {
-    min-height: 720px;
+    min-height: 900px;
   }
 
   .chart-canvas-composite {
-    height: 684px;
+    height: 864px;
   }
 }

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 import pandas as pd
 from sqlalchemy import select
+from decimal import Decimal
 
 from backend.app.main import create_app
 from backend.app.models import DailyPrice, IndexValuation, Instrument
@@ -304,6 +305,60 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["code"], 400)
         self.assertIn("selected symbol is 399376", response.json()["message"])
+
+    def test_style_rotation_returns_aligned_valuation_series(self) -> None:
+        session = self.app.state.session_factory()
+        try:
+            session.add_all(
+                [
+                    IndexValuation(symbol="AAA", trade_date=date(2026, 3, 18), pe_ttm=Decimal("10.1"), pb=Decimal("1.2")),
+                    IndexValuation(
+                        symbol="AAA",
+                        trade_date=date(2026, 3, 20),
+                        pe_ttm=Decimal("10.3"),
+                        dividend_yield=Decimal("0.021"),
+                    ),
+                    IndexValuation(
+                        symbol="BBB",
+                        trade_date=date(2026, 3, 19),
+                        pe_ttm=Decimal("20.2"),
+                        pb=Decimal("2.2"),
+                        dividend_yield=Decimal("0.031"),
+                    ),
+                    IndexValuation(symbol="BBB", trade_date=date(2026, 3, 20), pb=Decimal("2.3")),
+                ]
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        response = self.client.get(
+            "/api/style-rotation",
+            params={
+                "left_symbol": "AAA",
+                "right_symbol": "BBB",
+                "start_date": "2026-03-18",
+                "end_date": "2026-03-20",
+                "return_window": 1,
+                "ma_window": 1,
+                "quantile_window_min": 1,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        valuations = response.json()["data"]["valuations"]
+
+        self.assertEqual(valuations["pe"]["dates"], ["2026-03-18", "2026-03-19", "2026-03-20"])
+        self.assertEqual(valuations["pe"]["left"], [10.1, None, 10.3])
+        self.assertEqual(valuations["pe"]["right"], [None, 20.2, None])
+
+        self.assertEqual(valuations["pb"]["dates"], ["2026-03-18", "2026-03-19", "2026-03-20"])
+        self.assertEqual(valuations["pb"]["left"], [1.2, None, None])
+        self.assertEqual(valuations["pb"]["right"], [None, 2.2, 2.3])
+
+        self.assertEqual(valuations["dividend_yield"]["dates"], ["2026-03-19", "2026-03-20"])
+        self.assertEqual(valuations["dividend_yield"]["left"], [None, 0.021])
+        self.assertEqual(valuations["dividend_yield"]["right"], [0.031, None])
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import DailyPrice, Instrument
+from ..models import DailyPrice, IndexValuation, Instrument
 
 
 class InsufficientDataError(ValueError):
@@ -23,6 +23,13 @@ class StyleRotationParams:
     return_window: int
     ma_window: int
     quantile_window_min: int
+
+
+VALUATION_METRICS = {
+    "pe": {"column": "pe_ttm", "label": "PE"},
+    "pb": {"column": "pb", "label": "PB"},
+    "dividend_yield": {"column": "dividend_yield", "label": "股息率"},
+}
 
 
 def calculate_style_rotation(
@@ -154,6 +161,59 @@ def _load_instrument_name(session: Session, symbol: str) -> str:
     return instrument.name if instrument else symbol
 
 
+def _build_metric_comparison(
+    session: Session,
+    left_symbol: str,
+    right_symbol: str,
+    metric_key: str,
+    start: date | None,
+    end: date | None,
+) -> dict[str, object]:
+    metric = VALUATION_METRICS[metric_key]
+    column = getattr(IndexValuation, metric["column"])
+
+    query = select(IndexValuation.trade_date, IndexValuation.symbol, column).where(
+        IndexValuation.symbol.in_([left_symbol, right_symbol]),
+        column.is_not(None),
+    )
+    if start:
+        query = query.where(IndexValuation.trade_date >= start)
+    if end:
+        query = query.where(IndexValuation.trade_date <= end)
+    query = query.order_by(IndexValuation.trade_date.asc())
+
+    rows = session.execute(query).all()
+    values_by_symbol: dict[str, dict[str, float]] = {left_symbol: {}, right_symbol: {}}
+    for trade_date, symbol, value in rows:
+        values_by_symbol.setdefault(symbol, {})[trade_date.isoformat()] = round(float(value), 6)
+
+    all_dates = sorted(set(values_by_symbol[left_symbol]) | set(values_by_symbol[right_symbol]))
+    left_values = [values_by_symbol[left_symbol].get(item) for item in all_dates]
+    right_values = [values_by_symbol[right_symbol].get(item) for item in all_dates]
+
+    return {
+        "label": metric["label"],
+        "dates": all_dates,
+        "left": left_values,
+        "right": right_values,
+        "left_count": len(values_by_symbol[left_symbol]),
+        "right_count": len(values_by_symbol[right_symbol]),
+    }
+
+
+def _build_valuation_comparison(
+    session: Session,
+    left_symbol: str,
+    right_symbol: str,
+    start: date | None,
+    end: date | None,
+) -> dict[str, object]:
+    return {
+        metric_key: _build_metric_comparison(session, left_symbol, right_symbol, metric_key, start, end)
+        for metric_key in VALUATION_METRICS
+    }
+
+
 def build_style_rotation_response(session: Session, params: StyleRotationParams) -> dict[str, object]:
     query_start = None
     if params.start_date:
@@ -168,6 +228,8 @@ def build_style_rotation_response(session: Session, params: StyleRotationParams)
 
     result = calculate_style_rotation(df_left, df_right, params)
     signals = result["signals"]
+    valuation_start = date.fromisoformat(params.start_date) if params.start_date else None
+    valuation_end = date.fromisoformat(params.end_date) if params.end_date else None
     return {
         "meta": {
             "left_symbol": params.left_symbol,
@@ -198,4 +260,11 @@ def build_style_rotation_response(session: Session, params: StyleRotationParams)
             "latest_signal": result["latest_signal"],
         },
         "signals": signals,
+        "valuations": _build_valuation_comparison(
+            session,
+            params.left_symbol,
+            params.right_symbol,
+            valuation_start,
+            valuation_end,
+        ),
     }

@@ -115,10 +115,13 @@ function formatTooltipValue(seriesName, value) {
   if (value === "-" || value == null || Number.isNaN(value)) {
     return "--";
   }
+  if (seriesName.includes("股息率")) {
+    return `${(Number(value) * 100).toFixed(2)}%`;
+  }
   if (seriesName.includes("收益") || seriesName.includes("价差") || seriesName.includes("信号")) {
     return `${Number(value).toFixed(2)}%`;
   }
-  return Number(value).toFixed(4);
+  return Number(value).toFixed(2);
 }
 
 function tooltipFormatter(params) {
@@ -285,6 +288,21 @@ function ensureChart() {
   return chartInstance;
 }
 
+function alignMetricToDates(metricData, masterDates) {
+  if (!metricData?.dates?.length) {
+    return {
+      left: masterDates.map(() => null),
+      right: masterDates.map(() => null),
+    };
+  }
+  const valueMap = new Map(metricData.dates.map((date, index) => [date, metricData.left[index] ?? null]));
+  const rightMap = new Map(metricData.dates.map((date, index) => [date, metricData.right[index] ?? null]));
+  return {
+    left: masterDates.map((date) => valueMap.get(date) ?? null),
+    right: masterDates.map((date) => rightMap.get(date) ?? null),
+  };
+}
+
 function buildCompositeOption() {
   const data = response.value;
   if (!data) {
@@ -301,11 +319,17 @@ function buildCompositeOption() {
     };
   }
 
-  const { meta, series, summary, signals } = data;
+  const { meta, series, summary, signals, valuations } = data;
+  const leftLabel = meta.left_name || meta.left_symbol;
+  const rightLabel = meta.right_name || meta.right_symbol;
+  const masterDates = series.dates;
   const positiveArea = buildStrengthAreaData(series.spread, (value) => value > 0);
   const negativeArea = buildStrengthAreaData(series.spread, (value) => value < 0);
-  const globalP90 = buildFlatReference(series.dates, summary.global_p90);
-  const globalP10 = buildFlatReference(series.dates, summary.global_p10);
+  const globalP90 = buildFlatReference(masterDates, summary.global_p90);
+  const globalP10 = buildFlatReference(masterDates, summary.global_p10);
+  const peSeries = alignMetricToDates(valuations.pe, masterDates);
+  const pbSeries = alignMetricToDates(valuations.pb, masterDates);
+  const dividendSeries = alignMetricToDates(valuations.dividend_yield, masterDates);
   const buySignals = signals
     .filter((item) => item.type === "buy")
     .map((item) => [item.date, item.spread]);
@@ -332,6 +356,12 @@ function buildCompositeOption() {
         "MA20",
         "全局P90",
         "全局P10",
+        `${leftLabel} PE`,
+        `${rightLabel} PE`,
+        `${leftLabel} PB`,
+        `${rightLabel} PB`,
+        `${leftLabel} 股息率`,
+        `${rightLabel} 股息率`,
       ],
     },
     tooltip: {
@@ -354,12 +384,12 @@ function buildCompositeOption() {
       formatter: tooltipFormatter,
     },
     axisPointer: {
-      link: [{ xAxisIndex: [0] }],
+      link: [{ xAxisIndex: [0, 1, 2, 3] }],
     },
     dataZoom: [
       {
         type: "slider",
-        xAxisIndex: [0],
+        xAxisIndex: [0, 1, 2, 3],
         bottom: 14,
         height: 18,
         start: 0,
@@ -369,16 +399,47 @@ function buildCompositeOption() {
       },
       {
         type: "inside",
-        xAxisIndex: [0],
+        xAxisIndex: [0, 1, 2, 3],
       },
     ],
     grid: [
-      { top: "10%", bottom: "14%", left: "5%", right: "5%" },
+      { top: "7%", height: "29%", left: "5%", right: "5%" },
+      { top: "40%", height: "15%", left: "5%", right: "5%" },
+      { top: "59%", height: "15%", left: "5%", right: "5%" },
+      { top: "78%", height: "11%", left: "5%", right: "5%" },
     ],
     xAxis: [
       {
         type: "category",
-        data: series.dates,
+        gridIndex: 0,
+        data: masterDates,
+        boundaryGap: false,
+        axisLabel: { show: false },
+        axisTick: { show: false },
+        axisLine: { show: false },
+      },
+      {
+        type: "category",
+        gridIndex: 1,
+        data: masterDates,
+        boundaryGap: false,
+        axisLabel: { show: false },
+        axisTick: { show: false },
+        axisLine: { show: false },
+      },
+      {
+        type: "category",
+        gridIndex: 2,
+        data: masterDates,
+        boundaryGap: false,
+        axisLabel: { show: false },
+        axisTick: { show: false },
+        axisLine: { show: false },
+      },
+      {
+        type: "category",
+        gridIndex: 3,
+        data: masterDates,
         boundaryGap: false,
         axisLabel: { color: "#667085", hideOverlap: true },
         axisTick: { show: false },
@@ -388,6 +449,7 @@ function buildCompositeOption() {
     yAxis: [
       {
         type: "value",
+        gridIndex: 0,
         name: "收益差值(%)",
         nameLocation: "middle",
         nameGap: 42,
@@ -396,11 +458,46 @@ function buildCompositeOption() {
         axisLine: { show: false },
         splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
       },
+      {
+        type: "value",
+        gridIndex: 1,
+        name: "PE",
+        nameLocation: "middle",
+        nameGap: 42,
+        scale: true,
+        axisLabel: { color: "#667085", formatter: (value) => Number(value).toFixed(1) },
+        axisLine: { show: false },
+        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
+      },
+      {
+        type: "value",
+        gridIndex: 2,
+        name: "PB",
+        nameLocation: "middle",
+        nameGap: 42,
+        scale: true,
+        axisLabel: { color: "#667085", formatter: (value) => Number(value).toFixed(1) },
+        axisLine: { show: false },
+        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
+      },
+      {
+        type: "value",
+        gridIndex: 3,
+        name: "股息率",
+        nameLocation: "middle",
+        nameGap: 42,
+        scale: true,
+        axisLabel: { color: "#667085", formatter: (value) => `${(Number(value) * 100).toFixed(1)}%` },
+        axisLine: { show: false },
+        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
+      },
     ],
     series: [
       {
         name: "价差>0(左侧强)",
         type: "line",
+        xAxisIndex: 0,
+        yAxisIndex: 0,
         data: positiveArea,
         symbol: "none",
         lineStyle: { opacity: 0 },
@@ -411,6 +508,8 @@ function buildCompositeOption() {
       {
         name: "价差<0(右侧强)",
         type: "line",
+        xAxisIndex: 0,
+        yAxisIndex: 0,
         data: negativeArea,
         symbol: "none",
         lineStyle: { opacity: 0 },
@@ -421,6 +520,8 @@ function buildCompositeOption() {
       {
         name: "收益价差",
         type: "line",
+        xAxisIndex: 0,
+        yAxisIndex: 0,
         data: series.spread,
         symbol: "none",
         lineStyle: { width: 1.8, color: "#1f2937" },
@@ -429,6 +530,8 @@ function buildCompositeOption() {
       {
         name: "MA20",
         type: "line",
+        xAxisIndex: 0,
+        yAxisIndex: 0,
         data: series.ma,
         symbol: "none",
         lineStyle: { width: 1.6, type: "dashed", color: "#f59e0b" },
@@ -437,6 +540,8 @@ function buildCompositeOption() {
       {
         name: "全局P90",
         type: "line",
+        xAxisIndex: 0,
+        yAxisIndex: 0,
         data: globalP90,
         symbol: "none",
         lineStyle: { width: 1.2, type: "dashed", color: "#dc2626" },
@@ -445,6 +550,8 @@ function buildCompositeOption() {
       {
         name: "全局P10",
         type: "line",
+        xAxisIndex: 0,
+        yAxisIndex: 0,
         data: globalP10,
         symbol: "none",
         lineStyle: { width: 1.2, type: "dashed", color: "#16a34a" },
@@ -453,6 +560,8 @@ function buildCompositeOption() {
       {
         name: "买入信号",
         type: "scatter",
+        xAxisIndex: 0,
+        yAxisIndex: 0,
         data: buySignals,
         symbol: BUY_ARROW,
         symbolSize: 16,
@@ -462,19 +571,80 @@ function buildCompositeOption() {
       {
         name: "卖出信号",
         type: "scatter",
+        xAxisIndex: 0,
+        yAxisIndex: 0,
         data: sellSignals,
         symbol: SELL_ARROW,
         symbolSize: 16,
         itemStyle: { color: "#dc2626" },
         z: 6,
       },
+      {
+        name: `${leftLabel} PE`,
+        type: "line",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: peSeries.left,
+        symbol: "none",
+        connectNulls: false,
+        lineStyle: { width: 2.1, color: "#2563eb" },
+      },
+      {
+        name: `${rightLabel} PE`,
+        type: "line",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: peSeries.right,
+        symbol: "none",
+        connectNulls: false,
+        lineStyle: { width: 2.1, color: "#f97316" },
+      },
+      {
+        name: `${leftLabel} PB`,
+        type: "line",
+        xAxisIndex: 2,
+        yAxisIndex: 2,
+        data: pbSeries.left,
+        symbol: "none",
+        connectNulls: false,
+        lineStyle: { width: 2.1, color: "#2563eb" },
+      },
+      {
+        name: `${rightLabel} PB`,
+        type: "line",
+        xAxisIndex: 2,
+        yAxisIndex: 2,
+        data: pbSeries.right,
+        symbol: "none",
+        connectNulls: false,
+        lineStyle: { width: 2.1, color: "#f97316" },
+      },
+      {
+        name: `${leftLabel} 股息率`,
+        type: "line",
+        xAxisIndex: 3,
+        yAxisIndex: 3,
+        data: dividendSeries.left,
+        symbol: "none",
+        connectNulls: false,
+        lineStyle: { width: 2.1, color: "#2563eb" },
+      },
+      {
+        name: `${rightLabel} 股息率`,
+        type: "line",
+        xAxisIndex: 3,
+        yAxisIndex: 3,
+        data: dividendSeries.right,
+        symbol: "none",
+        connectNulls: false,
+        lineStyle: { width: 2.1, color: "#f97316" },
+      },
     ],
   };
 }
 
 function renderChart() {
-  const chart = ensureChart();
-  chart?.setOption(buildCompositeOption(), true);
+  ensureChart()?.setOption(buildCompositeOption(), true);
 }
 
 function handleResize() {
