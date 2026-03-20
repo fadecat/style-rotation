@@ -79,6 +79,9 @@ const valuationStatus = ref(null);
 const valuationStatusError = ref("");
 let syncStatusRequestId = 0;
 let valuationStatusRequestId = 0;
+let analyzeRequestId = 0;
+let analyzeDebounceTimer = null;
+const analysisReady = ref(false);
 
 const chartRef = ref(null);
 let chartInstance;
@@ -118,7 +121,7 @@ const DATE_RANGE_PRESETS = [
   { key: "20y", label: "最近20年" },
 ];
 const dateRangeSelection = reactive({
-  analysis: "custom",
+  analysis: "1y",
   sync: "custom",
 });
 
@@ -465,6 +468,7 @@ async function analyze() {
     errorMessage.value = "请选择左右标的";
     return;
   }
+  const requestId = ++analyzeRequestId;
   loading.analysis = true;
   errorMessage.value = "";
   try {
@@ -476,16 +480,37 @@ async function analyze() {
         end_date: form.endDate,
       },
     });
+    if (requestId !== analyzeRequestId) {
+      return;
+    }
     response.value = data.data;
     await nextTick();
     renderChart();
   } catch (error) {
+    if (requestId !== analyzeRequestId) {
+      return;
+    }
     response.value = null;
     errorMessage.value = error.response?.data?.message ?? "分析失败";
     renderChart();
   } finally {
-    loading.analysis = false;
+    if (requestId === analyzeRequestId) {
+      loading.analysis = false;
+    }
   }
+}
+
+function scheduleAnalyze() {
+  if (!analysisReady.value) {
+    return;
+  }
+  if (analyzeDebounceTimer) {
+    clearTimeout(analyzeDebounceTimer);
+  }
+  analyzeDebounceTimer = setTimeout(() => {
+    analyzeDebounceTimer = null;
+    analyze();
+  }, 160);
 }
 
 function openSyncModal() {
@@ -884,25 +909,25 @@ function buildCompositeOption() {
         gridIndex: 1,
         data: masterDates,
         boundaryGap: false,
-        axisLabel: { show: false },
+        axisLabel: { color: "#667085", hideOverlap: true, fontSize: 11, margin: 10 },
         axisTick: { show: false },
-        axisLine: { show: false },
+        axisLine: { lineStyle: { color: "#cbd5e1" } },
       },
       {
         type: "category",
         gridIndex: 2,
         data: masterDates,
         boundaryGap: false,
-        axisLabel: { show: false },
+        axisLabel: { color: "#667085", hideOverlap: true, fontSize: 11, margin: 10 },
         axisTick: { show: false },
-        axisLine: { show: false },
+        axisLine: { lineStyle: { color: "#cbd5e1" } },
       },
       {
         type: "category",
         gridIndex: 3,
         data: masterDates,
         boundaryGap: false,
-        axisLabel: { color: "#667085", hideOverlap: true },
+        axisLabel: { color: "#667085", hideOverlap: true, fontSize: 11, margin: 10 },
         axisTick: { show: false },
         axisLine: { lineStyle: { color: "#cbd5e1" } },
       },
@@ -1178,6 +1203,14 @@ watch(
 );
 
 watch(
+  () => [form.leftSymbol, form.rightSymbol, form.startDate, form.endDate],
+  () => {
+    scheduleAnalyze();
+  },
+  { immediate: false }
+);
+
+watch(
   () => [syncModal.open, syncSelection.leftSymbol, syncSelection.rightSymbol],
   async ([open]) => {
     if (!open) {
@@ -1202,11 +1235,16 @@ watch(
 onMounted(async () => {
   window.addEventListener("resize", handleResize);
   await fetchInstruments();
+  applyDateRangePreset("analysis");
+  analysisReady.value = true;
   await analyze();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", handleResize);
+  if (analyzeDebounceTimer) {
+    clearTimeout(analyzeDebounceTimer);
+  }
   chartInstance?.dispose();
 });
 </script>
@@ -1217,22 +1255,60 @@ onBeforeUnmount(() => {
       <div class="hero-copy">
         <p class="eyebrow">Style Rotation Dashboard</p>
         <h1>风格轮动单页分析台</h1>
-        <p class="hero-text">
-          选择任意两只指数或 ETF，拉取历史数据，计算收益价差、动态分位数和买卖信号，并在同一页面完成查看。
-        </p>
-      </div>
-      <div class="hero-actions">
-        <button class="ghost-button" :disabled="loading.sync || loading.instruments" @click="openSyncModal">
-          {{ loading.sync ? "同步中..." : "同步数据" }}
-        </button>
-        <button class="ghost-button" :disabled="loading.instruments" @click="openValuationModal">估值上传</button>
-        <button class="primary-button" :disabled="loading.analysis" @click="analyze">
-          {{ loading.analysis ? "分析中..." : "开始分析" }}
-        </button>
+        <p class="hero-text">围绕筛选和图表查看做紧凑布局，减少无效占位。</p>
       </div>
     </section>
 
+    <aside class="side-action-rail">
+      <button class="side-action-card side-action-sync" :disabled="loading.sync || loading.instruments" @click="openSyncModal">
+        <span class="side-action-kicker">数据维护</span>
+        <strong>{{ loading.sync ? "同步价格中" : "同步价格数据" }}</strong>
+        <small>{{ loading.sync ? "正在拉取腾讯指数行情" : "检查价格库范围并补齐缺口" }}</small>
+      </button>
+      <button class="side-action-card side-action-valuation" :disabled="loading.instruments" @click="openValuationModal">
+        <span class="side-action-kicker">估值导入</span>
+        <strong>上传估值数据</strong>
+        <small>导入 PE / PB / 股息率 CSV</small>
+      </button>
+    </aside>
+
+    <section v-if="errorMessage" class="error-banner">
+      {{ errorMessage }}
+    </section>
+
+    <section class="workspace-strip">
+      <section class="summary-grid">
+        <article v-for="card in summaryCards" :key="card.label" class="summary-card">
+          <span>{{ card.label }}</span>
+          <strong>{{ typeof card.value === 'number' ? formatNumber(card.value) : card.value }}</strong>
+        </article>
+      </section>
+
+      <section v-if="response" class="meta-strip">
+        <div>
+          <span>左侧</span>
+          <strong>{{ response.meta.left_symbol }} / {{ response.meta.left_name }}</strong>
+        </div>
+        <div>
+          <span>右侧</span>
+          <strong>{{ response.meta.right_symbol }} / {{ response.meta.right_name }}</strong>
+        </div>
+        <div>
+          <span>窗口</span>
+          <strong>{{ response.meta.start_date }} 至 {{ response.meta.end_date }}</strong>
+        </div>
+      </section>
+    </section>
+
     <section class="control-panel">
+      <div class="control-panel-header">
+        <div>
+          <span class="section-kicker">Query Filter</span>
+          <h2>分析筛选</h2>
+        </div>
+        <p>把主要空间留给图表，筛选区保留一行紧凑操作。</p>
+      </div>
+
       <div class="field">
         <label>左侧标的</label>
         <select v-model="form.leftSymbol" :disabled="loading.instruments">
@@ -1268,32 +1344,6 @@ onBeforeUnmount(() => {
       <div class="field">
         <label>结束日期</label>
         <input v-model="form.endDate" type="date" @change="markCustomDateRange('analysis')" />
-      </div>
-    </section>
-
-    <section v-if="errorMessage" class="error-banner">
-      {{ errorMessage }}
-    </section>
-
-    <section class="summary-grid">
-      <article v-for="card in summaryCards" :key="card.label" class="summary-card">
-        <span>{{ card.label }}</span>
-        <strong>{{ typeof card.value === 'number' ? formatNumber(card.value) : card.value }}</strong>
-      </article>
-    </section>
-
-    <section v-if="response" class="meta-strip">
-      <div>
-        <span>左侧</span>
-        <strong>{{ response.meta.left_symbol }} / {{ response.meta.left_name }}</strong>
-      </div>
-      <div>
-        <span>右侧</span>
-        <strong>{{ response.meta.right_symbol }} / {{ response.meta.right_name }}</strong>
-      </div>
-      <div>
-        <span>窗口</span>
-        <strong>{{ response.meta.start_date }} 至 {{ response.meta.end_date }}</strong>
       </div>
     </section>
 
