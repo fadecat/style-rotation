@@ -48,6 +48,7 @@ const latestSyncWindow = reactive({
   startDate: "2018-01-01",
   endDate: new Date().toISOString().slice(0, 10),
 });
+const VISIBLE_INSTRUMENT_SYMBOLS = new Set(["399376", "399373", "000852", "000922"]);
 const response = ref(null);
 const errorMessage = ref("");
 const valuationUploadMessage = ref("");
@@ -61,12 +62,48 @@ const peFileInputRef = ref(null);
 const pbFileInputRef = ref(null);
 const dividendFileInputRef = ref(null);
 
-const leftInstrument = computed(() => instruments.value.find((item) => item.symbol === form.leftSymbol));
-const rightInstrument = computed(() => instruments.value.find((item) => item.symbol === form.rightSymbol));
-const indexInstruments = computed(() => instruments.value.filter((item) => item.asset_type === "INDEX"));
+const visibleInstruments = computed(() => instruments.value.filter((item) => VISIBLE_INSTRUMENT_SYMBOLS.has(item.symbol)));
+const leftInstrument = computed(() => visibleInstruments.value.find((item) => item.symbol === form.leftSymbol));
+const rightInstrument = computed(() => visibleInstruments.value.find((item) => item.symbol === form.rightSymbol));
+const indexInstruments = computed(() => visibleInstruments.value.filter((item) => item.asset_type === "INDEX"));
 const selectedValuationInstrument = computed(() =>
   indexInstruments.value.find((item) => item.symbol === valuationUpload.symbol)
 );
+
+const LEFT_SYMBOL_POOL = new Set(["399376", "000852"]);
+const RIGHT_SYMBOL_POOL = new Set(["399373", "000922"]);
+const LEFT_NAME_KEYWORDS = ["小盘", "成长", "1000"];
+const RIGHT_NAME_KEYWORDS = ["大盘", "价值", "红利"];
+
+function matchesKeywords(name, keywords) {
+  return keywords.some((keyword) => name.includes(keyword));
+}
+
+function buildInstrumentGroups(side) {
+  const preferredPool = side === "left" ? LEFT_SYMBOL_POOL : RIGHT_SYMBOL_POOL;
+  const preferredKeywords = side === "left" ? LEFT_NAME_KEYWORDS : RIGHT_NAME_KEYWORDS;
+  const preferredLabel = side === "left" ? "成长/小盘/科技" : "大盘/价值/红利";
+  const preferred = [];
+
+  visibleInstruments.value.forEach((item) => {
+    if (preferredPool.has(item.symbol) || matchesKeywords(item.name, preferredKeywords)) {
+      preferred.push(item);
+    }
+  });
+
+  const groups = [];
+  if (preferred.length) {
+    groups.push({ label: preferredLabel, items: preferred });
+  }
+  return groups;
+}
+
+const leftInstrumentGroups = computed(() => buildInstrumentGroups("left"));
+const rightInstrumentGroups = computed(() => buildInstrumentGroups("right"));
+
+function flattenInstrumentGroups(groups) {
+  return groups.flatMap((group) => group.items);
+}
 
 const summaryCards = computed(() => {
   if (!response.value) {
@@ -157,6 +194,14 @@ async function fetchInstruments() {
   try {
     const { data } = await axios.get(`${API_BASE}/api/instruments`);
     instruments.value = data.data.items;
+    const leftCandidates = flattenInstrumentGroups(leftInstrumentGroups.value);
+    const rightCandidates = flattenInstrumentGroups(rightInstrumentGroups.value);
+    if (!leftCandidates.some((item) => item.symbol === form.leftSymbol)) {
+      form.leftSymbol = leftCandidates[0]?.symbol ?? "";
+    }
+    if (!rightCandidates.some((item) => item.symbol === form.rightSymbol)) {
+      form.rightSymbol = rightCandidates[0]?.symbol ?? "";
+    }
     if (!indexInstruments.value.some((item) => item.symbol === valuationUpload.symbol)) {
       valuationUpload.symbol = "";
     }
@@ -734,17 +779,21 @@ onBeforeUnmount(() => {
       <div class="field">
         <label>左侧标的</label>
         <select v-model="form.leftSymbol" :disabled="loading.instruments">
-          <option v-for="item in instruments" :key="item.symbol" :value="item.symbol">
-            {{ item.symbol }} / {{ item.name }}
-          </option>
+          <optgroup v-for="group in leftInstrumentGroups" :key="`left-${group.label}`" :label="group.label">
+            <option v-for="item in group.items" :key="item.symbol" :value="item.symbol">
+              {{ item.symbol }} / {{ item.name }}
+            </option>
+          </optgroup>
         </select>
       </div>
       <div class="field">
         <label>右侧标的</label>
         <select v-model="form.rightSymbol" :disabled="loading.instruments">
-          <option v-for="item in instruments" :key="item.symbol" :value="item.symbol">
-            {{ item.symbol }} / {{ item.name }}
-          </option>
+          <optgroup v-for="group in rightInstrumentGroups" :key="`right-${group.label}`" :label="group.label">
+            <option v-for="item in group.items" :key="item.symbol" :value="item.symbol">
+              {{ item.symbol }} / {{ item.name }}
+            </option>
+          </optgroup>
         </select>
       </div>
       <div class="field">
