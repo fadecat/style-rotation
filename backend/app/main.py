@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 import logging
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, File, Form, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
@@ -16,6 +16,7 @@ from .models import Instrument
 from .schemas import MarketDataSyncRequest
 from .services.market_data import DataSyncError, init_database, seed_default_data, sync_market_data
 from .services.style_rotation import InsufficientDataError, StyleRotationParams, build_style_rotation_response
+from .services.valuation_upload import SUPPORTED_METRICS, ValuationUploadError, upload_valuation_csv
 
 logging.basicConfig(
     level=logging.INFO,
@@ -87,6 +88,74 @@ def create_app(database_url: str | None = None, seed_demo: bool = True) -> FastA
         except DataSyncError as exc:
             return JSONResponse(status_code=502, content={"code": 502, "message": str(exc), "data": None})
         return {"code": 200, "message": "sync success", "data": data}
+
+    @app.post("/api/valuations/upload")
+    async def upload_valuation_endpoint(
+        symbol: str = Form(...),
+        metric_type: str = Form(...),
+        file: UploadFile = File(...),
+        session: Session = Depends(get_session),
+    ) -> dict[str, object]:
+        normalized_symbol = symbol.strip()
+        normalized_metric = metric_type.strip().lower()
+        if normalized_metric not in SUPPORTED_METRICS:
+            return JSONResponse(
+                status_code=400,
+                content={"code": 400, "message": f"unsupported metric_type: {metric_type}", "data": None},
+            )
+
+        instrument = session.scalar(select(Instrument).where(Instrument.symbol == normalized_symbol))
+        if instrument is None:
+            return JSONResponse(
+                status_code=400,
+                content={"code": 400, "message": f"unknown symbol: {normalized_symbol}", "data": None},
+            )
+        if instrument.asset_type != "INDEX":
+            return JSONResponse(
+                status_code=400,
+                content={"code": 400, "message": f"valuation upload only supports INDEX symbol: {normalized_symbol}", "data": None},
+            )
+
+        filename = (file.filename or "upload.csv").strip()
+        known_indexes = session.scalars(
+            select(Instrument).where(Instrument.asset_type == "INDEX", Instrument.is_active == True)
+        ).all()
+        conflicting_hint = next(
+            (
+                item
+                for item in known_indexes
+                if item.symbol != instrument.symbol
+                and any(token and token in filename for token in (item.symbol, item.name))
+            ),
+            None,
+        )
+        selected_hint_found = any(token and token in filename for token in (instrument.symbol, instrument.name))
+        if conflicting_hint and not selected_hint_found:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "code": 400,
+                    "message": (
+                        f"upload filename appears to belong to {conflicting_hint.symbol}/{conflicting_hint.name}, "
+                        f"but selected symbol is {instrument.symbol}/{instrument.name}"
+                    ),
+                    "data": None,
+                },
+            )
+
+        content = await file.read()
+        try:
+            data = upload_valuation_csv(
+                session=session,
+                symbol=normalized_symbol,
+                metric_type=normalized_metric,
+                source_file=filename,
+                content=content,
+            )
+        except ValuationUploadError as exc:
+            session.rollback()
+            return JSONResponse(status_code=400, content={"code": 400, "message": str(exc), "data": None})
+        return {"code": 200, "message": "valuation upload success", "data": data}
 
     @app.get("/api/style-rotation")
     def style_rotation(

@@ -50,12 +50,23 @@ const latestSyncWindow = reactive({
 });
 const response = ref(null);
 const errorMessage = ref("");
+const valuationUploadMessage = ref("");
+const valuationUpload = reactive({
+  symbol: "",
+});
 
 const chartRef = ref(null);
 let chartInstance;
+const peFileInputRef = ref(null);
+const pbFileInputRef = ref(null);
+const dividendFileInputRef = ref(null);
 
 const leftInstrument = computed(() => instruments.value.find((item) => item.symbol === form.leftSymbol));
 const rightInstrument = computed(() => instruments.value.find((item) => item.symbol === form.rightSymbol));
+const indexInstruments = computed(() => instruments.value.filter((item) => item.asset_type === "INDEX"));
+const selectedValuationInstrument = computed(() =>
+  indexInstruments.value.find((item) => item.symbol === valuationUpload.symbol)
+);
 
 const summaryCards = computed(() => {
   if (!response.value) {
@@ -65,8 +76,6 @@ const summaryCards = computed(() => {
   return [
     { label: "最新价差", value: summary.latest_spread },
     { label: "最新均线", value: summary.latest_ma },
-    { label: "左侧收益", value: summary.latest_left_return },
-    { label: "右侧收益", value: summary.latest_right_return },
     { label: "全局 P90", value: summary.global_p90 },
     { label: "全局 P10", value: summary.global_p10 },
     { label: "信号数", value: summary.signal_count },
@@ -145,6 +154,9 @@ async function fetchInstruments() {
   try {
     const { data } = await axios.get(`${API_BASE}/api/instruments`);
     instruments.value = data.data.items;
+    if (!indexInstruments.value.some((item) => item.symbol === valuationUpload.symbol)) {
+      valuationUpload.symbol = "";
+    }
   } catch (error) {
     errorMessage.value = error.response?.data?.message ?? "无法加载标的列表";
   } finally {
@@ -177,6 +189,60 @@ async function analyze() {
     renderChart();
   } finally {
     loading.analysis = false;
+  }
+}
+
+function triggerValuationUpload(metricType) {
+  const mapping = {
+    pe: peFileInputRef,
+    pb: pbFileInputRef,
+    dividend_yield: dividendFileInputRef,
+  };
+  mapping[metricType]?.value?.click();
+}
+
+async function uploadValuationFile(metricType, event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+
+  if (!file) {
+    return;
+  }
+  if (!valuationUpload.symbol) {
+    errorMessage.value = "请先选择目标指数代码";
+    return;
+  }
+  if (!selectedValuationInstrument.value) {
+    errorMessage.value = "目标指数代码无效，请重新选择";
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `确认上传 ${file.name}\n目标指数：${selectedValuationInstrument.value.symbol} / ${selectedValuationInstrument.value.name}\n指标类型：${metricType}`
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  loading.sync = true;
+  errorMessage.value = "";
+  valuationUploadMessage.value = "";
+  try {
+    const formData = new FormData();
+    formData.append("symbol", valuationUpload.symbol);
+    formData.append("metric_type", metricType);
+    formData.append("file", file);
+
+    const { data } = await axios.post(`${API_BASE}/api/valuations/upload`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    const result = data.data;
+    valuationUploadMessage.value =
+      `${metricType.toUpperCase()} 上传成功：${selectedValuationInstrument.value.name}(${result.symbol})，${result.row_count} 行，范围 ${result.earliest_date} 至 ${result.latest_date}`;
+  } catch (error) {
+    errorMessage.value = error.response?.data?.message ?? "估值文件上传失败";
+  } finally {
+    loading.sync = false;
   }
 }
 
@@ -236,8 +302,6 @@ function buildCompositeOption() {
   }
 
   const { meta, series, summary, signals } = data;
-  const leftLabel = meta.left_name || meta.left_symbol;
-  const rightLabel = meta.right_name || meta.right_symbol;
   const positiveArea = buildStrengthAreaData(series.spread, (value) => value > 0);
   const negativeArea = buildStrengthAreaData(series.spread, (value) => value < 0);
   const globalP90 = buildFlatReference(series.dates, summary.global_p90);
@@ -268,10 +332,6 @@ function buildCompositeOption() {
         "MA20",
         "全局P90",
         "全局P10",
-        `${leftLabel}收益率`,
-        `${rightLabel}收益率`,
-        `${leftLabel}净值`,
-        `${rightLabel}净值`,
       ],
     },
     tooltip: {
@@ -294,12 +354,12 @@ function buildCompositeOption() {
       formatter: tooltipFormatter,
     },
     axisPointer: {
-      link: [{ xAxisIndex: "all" }],
+      link: [{ xAxisIndex: [0] }],
     },
     dataZoom: [
       {
         type: "slider",
-        xAxisIndex: [0, 1, 2],
+        xAxisIndex: [0],
         bottom: 14,
         height: 18,
         start: 0,
@@ -309,36 +369,15 @@ function buildCompositeOption() {
       },
       {
         type: "inside",
-        xAxisIndex: [0, 1, 2],
+        xAxisIndex: [0],
       },
     ],
     grid: [
-      { top: "8%", height: "28%", left: "5%", right: "5%" },
-      { top: "40%", height: "23%", left: "5%", right: "5%" },
-      { top: "69%", height: "18%", left: "5%", right: "5%" },
+      { top: "10%", bottom: "14%", left: "5%", right: "5%" },
     ],
     xAxis: [
       {
         type: "category",
-        gridIndex: 0,
-        data: series.dates,
-        boundaryGap: false,
-        axisLabel: { show: false },
-        axisTick: { show: false },
-        axisLine: { show: false },
-      },
-      {
-        type: "category",
-        gridIndex: 1,
-        data: series.dates,
-        boundaryGap: false,
-        axisLabel: { show: false },
-        axisTick: { show: false },
-        axisLine: { show: false },
-      },
-      {
-        type: "category",
-        gridIndex: 2,
         data: series.dates,
         boundaryGap: false,
         axisLabel: { color: "#667085", hideOverlap: true },
@@ -349,30 +388,7 @@ function buildCompositeOption() {
     yAxis: [
       {
         type: "value",
-        gridIndex: 0,
         name: "收益差值(%)",
-        nameLocation: "middle",
-        nameGap: 42,
-        scale: true,
-        axisLabel: { color: "#667085" },
-        axisLine: { show: false },
-        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
-      },
-      {
-        type: "value",
-        gridIndex: 1,
-        name: "年滚动收益(%)",
-        nameLocation: "middle",
-        nameGap: 42,
-        scale: true,
-        axisLabel: { color: "#667085" },
-        axisLine: { show: false },
-        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
-      },
-      {
-        type: "value",
-        gridIndex: 2,
-        name: "归一化净值",
         nameLocation: "middle",
         nameGap: 42,
         scale: true,
@@ -385,8 +401,6 @@ function buildCompositeOption() {
       {
         name: "价差>0(左侧强)",
         type: "line",
-        xAxisIndex: 0,
-        yAxisIndex: 0,
         data: positiveArea,
         symbol: "none",
         lineStyle: { opacity: 0 },
@@ -397,8 +411,6 @@ function buildCompositeOption() {
       {
         name: "价差<0(右侧强)",
         type: "line",
-        xAxisIndex: 0,
-        yAxisIndex: 0,
         data: negativeArea,
         symbol: "none",
         lineStyle: { opacity: 0 },
@@ -409,8 +421,6 @@ function buildCompositeOption() {
       {
         name: "收益价差",
         type: "line",
-        xAxisIndex: 0,
-        yAxisIndex: 0,
         data: series.spread,
         symbol: "none",
         lineStyle: { width: 1.8, color: "#1f2937" },
@@ -419,8 +429,6 @@ function buildCompositeOption() {
       {
         name: "MA20",
         type: "line",
-        xAxisIndex: 0,
-        yAxisIndex: 0,
         data: series.ma,
         symbol: "none",
         lineStyle: { width: 1.6, type: "dashed", color: "#f59e0b" },
@@ -429,8 +437,6 @@ function buildCompositeOption() {
       {
         name: "全局P90",
         type: "line",
-        xAxisIndex: 0,
-        yAxisIndex: 0,
         data: globalP90,
         symbol: "none",
         lineStyle: { width: 1.2, type: "dashed", color: "#dc2626" },
@@ -439,8 +445,6 @@ function buildCompositeOption() {
       {
         name: "全局P10",
         type: "line",
-        xAxisIndex: 0,
-        yAxisIndex: 0,
         data: globalP10,
         symbol: "none",
         lineStyle: { width: 1.2, type: "dashed", color: "#16a34a" },
@@ -449,8 +453,6 @@ function buildCompositeOption() {
       {
         name: "买入信号",
         type: "scatter",
-        xAxisIndex: 0,
-        yAxisIndex: 0,
         data: buySignals,
         symbol: BUY_ARROW,
         symbolSize: 16,
@@ -460,55 +462,11 @@ function buildCompositeOption() {
       {
         name: "卖出信号",
         type: "scatter",
-        xAxisIndex: 0,
-        yAxisIndex: 0,
         data: sellSignals,
         symbol: SELL_ARROW,
         symbolSize: 16,
         itemStyle: { color: "#dc2626" },
         z: 6,
-      },
-      {
-        name: `${leftLabel}收益率`,
-        type: "line",
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: series.left_return,
-        symbol: "none",
-        lineStyle: { width: 2.2, color: "#2563eb" },
-        markLine: {
-          symbol: "none",
-          silent: true,
-          lineStyle: { color: "#475467", type: "dashed", width: 1 },
-          data: [{ yAxis: 0 }],
-        },
-      },
-      {
-        name: `${rightLabel}收益率`,
-        type: "line",
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: series.right_return,
-        symbol: "none",
-        lineStyle: { width: 2.2, color: "#f97316" },
-      },
-      {
-        name: `${leftLabel}净值`,
-        type: "line",
-        xAxisIndex: 2,
-        yAxisIndex: 2,
-        data: series.left_nav,
-        symbol: "none",
-        lineStyle: { width: 2.2, color: "#2563eb" },
-      },
-      {
-        name: `${rightLabel}净值`,
-        type: "line",
-        xAxisIndex: 2,
-        yAxisIndex: 2,
-        data: series.right_nav,
-        symbol: "none",
-        lineStyle: { width: 2.2, color: "#f97316" },
       },
     ],
   };
@@ -604,6 +562,45 @@ onBeforeUnmount(() => {
 
     <section v-if="errorMessage" class="error-banner">
       {{ errorMessage }}
+    </section>
+
+    <section class="valuation-upload-panel">
+      <div class="valuation-upload-header">
+        <div>
+          <span class="section-kicker">Valuation Upload</span>
+          <h2>目标指数估值 CSV 上传</h2>
+        </div>
+        <div class="field">
+          <label>目标指数代码</label>
+          <select v-model="valuationUpload.symbol" :disabled="loading.instruments">
+            <option value="">请选择指数</option>
+            <option v-for="item in indexInstruments" :key="item.symbol" :value="item.symbol">
+              {{ item.symbol }} / {{ item.name }}
+            </option>
+          </select>
+        </div>
+      </div>
+      <div class="valuation-upload-actions">
+        <button class="upload-button" :disabled="loading.sync || !valuationUpload.symbol" @click="triggerValuationUpload('pe')">上传 PE CSV</button>
+        <button class="upload-button" :disabled="loading.sync || !valuationUpload.symbol" @click="triggerValuationUpload('pb')">上传 PB CSV</button>
+        <button class="upload-button" :disabled="loading.sync || !valuationUpload.symbol" @click="triggerValuationUpload('dividend_yield')">
+          上传股息率 CSV
+        </button>
+      </div>
+      <p class="upload-target">
+        当前目标：
+        <strong>{{ selectedValuationInstrument ? `${selectedValuationInstrument.symbol} / ${selectedValuationInstrument.name}` : "未选择" }}</strong>
+      </p>
+      <input ref="peFileInputRef" class="hidden-input" type="file" accept=".csv,text/csv" @change="uploadValuationFile('pe', $event)" />
+      <input ref="pbFileInputRef" class="hidden-input" type="file" accept=".csv,text/csv" @change="uploadValuationFile('pb', $event)" />
+      <input
+        ref="dividendFileInputRef"
+        class="hidden-input"
+        type="file"
+        accept=".csv,text/csv"
+        @change="uploadValuationFile('dividend_yield', $event)"
+      />
+      <p v-if="valuationUploadMessage" class="upload-success">{{ valuationUploadMessage }}</p>
     </section>
 
     <section class="summary-grid">

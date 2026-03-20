@@ -151,6 +151,67 @@ select {
   font-weight: 700;
 }
 
+.valuation-upload-panel {
+  margin-top: 18px;
+  padding: 20px;
+  border-radius: 24px;
+  background: rgba(255, 252, 247, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 14px 30px rgba(39, 32, 18, 0.08);
+}
+
+.valuation-upload-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: end;
+}
+
+.section-kicker {
+  display: inline-block;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.valuation-upload-header h2 {
+  margin: 6px 0 0;
+  font-size: 24px;
+}
+
+.valuation-upload-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+.upload-button {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 18px;
+  background: #1f2937;
+  color: #f8fafc;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.upload-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.upload-success {
+  margin: 14px 0 0;
+  color: #0b6b41;
+  font-weight: 700;
+}
+
+.hidden-input {
+  display: none;
+}
+
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -237,6 +298,7 @@ select {
   .hero-panel,
   .hero-actions,
   .control-panel,
+  .valuation-upload-header,
   .summary-grid,
   .meta-strip {
     grid-template-columns: 1fr;

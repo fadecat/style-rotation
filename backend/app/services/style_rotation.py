@@ -184,20 +184,14 @@ def build_style_rotation_response(session: Session, params: StyleRotationParams)
             "dates": result["dates"],
             "left_close": result["left_close"],
             "right_close": result["right_close"],
-            "left_return": result["left_return"],
-            "right_return": result["right_return"],
             "spread": result["spread"],
             "ma": result["ma"],
             "p90_dynamic": result["p90_dynamic"],
             "p10_dynamic": result["p10_dynamic"],
-            "left_nav": result["left_nav"],
-            "right_nav": result["right_nav"],
         },
         "summary": {
             "latest_spread": result["spread"][-1],
             "latest_ma": result["ma"][-1],
-            "latest_left_return": result["left_return"][-1],
-            "latest_right_return": result["right_return"][-1],
             "global_p90": result["global_p90"],
             "global_p10": result["global_p10"],
             "signal_count": len(signals),
@@ -205,4 +199,3 @@ def build_style_rotation_response(session: Session, params: StyleRotationParams)
         },
         "signals": signals,
     }
-

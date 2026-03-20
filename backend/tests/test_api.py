@@ -10,7 +10,7 @@ import pandas as pd
 from sqlalchemy import select
 
 from backend.app.main import create_app
-from backend.app.models import DailyPrice
+from backend.app.models import DailyPrice, IndexValuation, Instrument
 from backend.app.schemas import InstrumentInput, MarketDataSyncRequest
 from backend.app.services.market_data import init_database, sync_market_data
 
@@ -44,6 +44,14 @@ class ApiTestCase(unittest.TestCase):
         self.client.close()
         self.app.state.engine.dispose()
         self.temp_dir.cleanup()
+
+    def seed_index_instrument(self, symbol: str, name: str) -> None:
+        session = self.app.state.session_factory()
+        try:
+            session.add(Instrument(symbol=symbol, name=name, market="CN", asset_type="INDEX", source="manual"))
+            session.commit()
+        finally:
+            session.close()
 
     def test_same_symbol_returns_400(self) -> None:
         response = self.client.get("/api/style-rotation", params={"left_symbol": "AAA", "right_symbol": "AAA"})
@@ -198,6 +206,104 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json()["code"], 502)
         self.assertIn("disabled", response.json()["message"])
+
+    def test_upload_valuation_csv_for_pe(self) -> None:
+        self.seed_index_instrument("000922", "中证红利")
+
+        csv_content = """日期,收盘点位,全收益收盘点位(元),市值(元),流通市值(元),自由流通市值(元),PE-TTM市值加权,PE-TTM 分位点,PE-TTM 80%分位点值,PE-TTM 50%分位点值,PE-TTM 20%分位点值
+2026-03-20,=5772.6500,=12121.5800,=24146985436231.3125,=15938202596389,=5176079006417.8994,=8.7460,=0.8390,=8.5650,=7.6592,=6.0261
+2026-03-19,=5799.1900,=12177.3200,=24288465659526.4648,=16050799474511,=5202452064512.2373,=8.7745,=0.8434,=8.5650,=7.6580,=6.0245
+"""
+
+        response = self.client.post(
+            "/api/valuations/upload",
+            data={"symbol": "000922", "metric_type": "pe"},
+            files={"file": ("中证红利_PE.csv", csv_content.encode("utf-8"), "text/csv")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["code"], 200)
+        self.assertEqual(response.json()["data"]["row_count"], 2)
+
+        session = self.app.state.session_factory()
+        try:
+            valuations = session.scalars(
+                select(IndexValuation).where(IndexValuation.symbol == "000922").order_by(IndexValuation.trade_date.desc())
+            ).all()
+            self.assertEqual(len(valuations), 2)
+            self.assertEqual(float(valuations[0].pe_ttm), 8.746)
+            self.assertEqual(float(valuations[0].pe_percentile), 0.839)
+        finally:
+            session.close()
+
+    def test_upload_valuation_csv_rejects_wrong_shape(self) -> None:
+        self.seed_index_instrument("000922", "中证红利")
+
+        csv_content = "日期,收盘点位\n2026-03-20,=5772.6500\n"
+
+        response = self.client.post(
+            "/api/valuations/upload",
+            data={"symbol": "000922", "metric_type": "pb"},
+            files={"file": ("bad.csv", csv_content.encode("utf-8"), "text/csv")},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], 400)
+
+    def test_upload_valuation_csv_replaces_old_metric_rows_for_same_symbol(self) -> None:
+        self.seed_index_instrument("000922", "中证红利")
+
+        first_csv = """日期,收盘点位,全收益收盘点位(元),市值(元),流通市值(元),自由流通市值(元),PE-TTM市值加权,PE-TTM 分位点,PE-TTM 80%分位点值,PE-TTM 50%分位点值,PE-TTM 20%分位点值
+2026-03-20,=5772.6500,=12121.5800,=24146985436231.3125,=15938202596389,=5176079006417.8994,=8.7460,=0.8390,=8.5650,=7.6592,=6.0261
+2026-03-19,=5799.1900,=12177.3200,=24288465659526.4648,=16050799474511,=5202452064512.2373,=8.7745,=0.8434,=8.5650,=7.6580,=6.0245
+"""
+        second_csv = """日期,收盘点位,全收益收盘点位(元),市值(元),流通市值(元),自由流通市值(元),PE-TTM市值加权,PE-TTM 分位点,PE-TTM 80%分位点值,PE-TTM 50%分位点值,PE-TTM 20%分位点值
+2026-03-20,=5772.6500,=12121.5800,=24146985436231.3125,=15938202596389,=5176079006417.8994,=9.1000,=0.9000,=8.8000,=7.7000,=6.1000
+"""
+
+        first_response = self.client.post(
+            "/api/valuations/upload",
+            data={"symbol": "000922", "metric_type": "pe"},
+            files={"file": ("first.csv", first_csv.encode("utf-8"), "text/csv")},
+        )
+        self.assertEqual(first_response.status_code, 200)
+
+        second_response = self.client.post(
+            "/api/valuations/upload",
+            data={"symbol": "000922", "metric_type": "pe"},
+            files={"file": ("second.csv", second_csv.encode("utf-8"), "text/csv")},
+        )
+        self.assertEqual(second_response.status_code, 200)
+
+        session = self.app.state.session_factory()
+        try:
+            valuations = session.scalars(
+                select(IndexValuation).where(IndexValuation.symbol == "000922").order_by(IndexValuation.trade_date.desc())
+            ).all()
+            self.assertEqual(len(valuations), 1)
+            self.assertEqual(valuations[0].trade_date.isoformat(), "2026-03-20")
+            self.assertEqual(float(valuations[0].pe_ttm), 9.1)
+            self.assertEqual(valuations[0].source_file, "second.csv")
+        finally:
+            session.close()
+
+    def test_upload_valuation_csv_rejects_filename_symbol_mismatch(self) -> None:
+        self.seed_index_instrument("399376", "国证小盘成长")
+        self.seed_index_instrument("000922", "中证红利")
+
+        csv_content = """日期,收盘点位,全收益收盘点位(元),市值(元),流通市值(元),自由流通市值(元),PE-TTM市值加权,PE-TTM 分位点,PE-TTM 80%分位点值,PE-TTM 50%分位点值,PE-TTM 20%分位点值
+2026-03-20,=5772.6500,=12121.5800,=24146985436231.3125,=15938202596389,=5176079006417.8994,=8.7460,=0.8390,=8.5650,=7.6592,=6.0261
+"""
+
+        response = self.client.post(
+            "/api/valuations/upload",
+            data={"symbol": "399376", "metric_type": "pe"},
+            files={"file": ("中证红利_PE.csv", csv_content.encode("utf-8"), "text/csv")},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], 400)
+        self.assertIn("selected symbol is 399376", response.json()["message"])
 
 
 if __name__ == "__main__":

@@ -43,3 +43,34 @@ class DailyPrice(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
+
+class IndexValuation(Base):
+    __tablename__ = "index_valuations"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uniq_symbol_trade_date_valuation"),
+        Index("idx_symbol_trade_date_valuation", "symbol", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    close: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    total_return_close: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    market_value: Mapped[float | None] = mapped_column(Numeric(24, 4), nullable=True)
+    float_market_value: Mapped[float | None] = mapped_column(Numeric(24, 4), nullable=True)
+    free_float_market_value: Mapped[float | None] = mapped_column(Numeric(24, 4), nullable=True)
+    pe_ttm: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    pe_percentile: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    pe_p80: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    pe_p50: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    pe_p20: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    pb: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    pb_percentile: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    pb_p80: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    pb_p50: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    pb_p20: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    dividend_yield: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), default="gxl_csv")
+    source_file: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
