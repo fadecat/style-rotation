@@ -205,6 +205,32 @@ const valuationMetricCards = computed(() =>
   }))
 );
 
+const exportSummaryRows = computed(() => {
+  if (!response.value) {
+    return [];
+  }
+  const { meta, series, valuations } = response.value;
+  const leftLabel = meta.left_name || meta.left_symbol;
+  const rightLabel = meta.right_name || meta.right_symbol;
+  const latestSpread = series?.spread?.length ? series.spread[series.spread.length - 1] : null;
+
+  return [
+    { label: "当前收益差值", value: formatSpreadBadgeValue(latestSpread) },
+    {
+      label: "当前 PE",
+      value: `左 ${leftLabel}: ${formatMetricBadgeValue(findLatestDefinedValue(valuations?.pe?.left), "pe")}  |  右 ${rightLabel}: ${formatMetricBadgeValue(findLatestDefinedValue(valuations?.pe?.right), "pe")}`,
+    },
+    {
+      label: "当前 PB",
+      value: `左 ${leftLabel}: ${formatMetricBadgeValue(findLatestDefinedValue(valuations?.pb?.left), "pb")}  |  右 ${rightLabel}: ${formatMetricBadgeValue(findLatestDefinedValue(valuations?.pb?.right), "pb")}`,
+    },
+    {
+      label: "当前股息率",
+      value: `左 ${leftLabel}: ${formatMetricBadgeValue(findLatestDefinedValue(valuations?.dividend_yield?.left), "dividend_yield")}  |  右 ${rightLabel}: ${formatMetricBadgeValue(findLatestDefinedValue(valuations?.dividend_yield?.right), "dividend_yield")}`,
+    },
+  ];
+});
+
 function formatNumber(value, digits = 2) {
   if (typeof value !== "number") {
     return value;
@@ -387,6 +413,23 @@ function buildFlatReference(dates, value) {
   return dates.map(() => value);
 }
 
+function buildDefaultZoomRange(totalCount) {
+  if (!totalCount || totalCount <= 320) {
+    return { start: 0, end: 100 };
+  }
+
+  let visibleCount = 260;
+  if (totalCount > 1500) {
+    visibleCount = 520;
+  } else if (totalCount > 800) {
+    visibleCount = 360;
+  }
+
+  const end = 100;
+  const start = Math.max(0, Number(((1 - visibleCount / totalCount) * 100).toFixed(2)));
+  return { start, end };
+}
+
 function extractSeriesColor(color) {
   if (!color) {
     return "#6b7280";
@@ -409,6 +452,38 @@ function formatTooltipValue(seriesName, value) {
   }
   if (seriesName.includes("收益") || seriesName.includes("价差") || seriesName.includes("信号")) {
     return `${Number(value).toFixed(2)}%`;
+  }
+  return Number(value).toFixed(2);
+}
+
+function formatSpreadBadgeValue(value) {
+  if (value == null || Number.isNaN(value)) {
+    return "--";
+  }
+  const numericValue = Number(value);
+  const sign = numericValue > 0 ? "+" : "";
+  return `${sign}${numericValue.toFixed(2)}%`;
+}
+
+function findLatestDefinedValue(values) {
+  if (!Array.isArray(values)) {
+    return null;
+  }
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const value = values[index];
+    if (value != null && !Number.isNaN(value)) {
+      return Number(value);
+    }
+  }
+  return null;
+}
+
+function formatMetricBadgeValue(value, metricKey) {
+  if (value == null || Number.isNaN(value)) {
+    return "--";
+  }
+  if (metricKey === "dividend_yield") {
+    return `${(Number(value) * 100).toFixed(2)}%`;
   }
   return Number(value).toFixed(2);
 }
@@ -779,6 +854,7 @@ function buildCompositeOption() {
   const peSeries = alignMetricToDates(valuations.pe, masterDates);
   const pbSeries = alignMetricToDates(valuations.pb, masterDates);
   const dividendSeries = alignMetricToDates(valuations.dividend_yield, masterDates);
+  const zoomRange = buildDefaultZoomRange(masterDates.length);
   const buySignals = signals
     .filter((item) => item.type === "buy")
     .map((item) => [item.date, item.spread]);
@@ -885,14 +961,16 @@ function buildCompositeOption() {
         xAxisIndex: [0, 1, 2, 3],
         bottom: 14,
         height: 18,
-        start: 0,
-        end: 100,
+        start: zoomRange.start,
+        end: zoomRange.end,
         borderColor: "rgba(148, 163, 184, 0.32)",
         fillerColor: "rgba(39, 76, 119, 0.12)",
       },
       {
         type: "inside",
         xAxisIndex: [0, 1, 2, 3],
+        start: zoomRange.start,
+        end: zoomRange.end,
       },
     ],
     grid: [
@@ -907,16 +985,16 @@ function buildCompositeOption() {
         gridIndex: 0,
         data: masterDates,
         boundaryGap: false,
-        axisLabel: { show: false },
+        axisLabel: { color: "#667085", hideOverlap: true, showMinLabel: true, showMaxLabel: true, fontSize: 11, margin: 10 },
         axisTick: { show: false },
-        axisLine: { show: false },
+        axisLine: { lineStyle: { color: "#cbd5e1" } },
       },
       {
         type: "category",
         gridIndex: 1,
         data: masterDates,
         boundaryGap: false,
-        axisLabel: { color: "#667085", hideOverlap: true, fontSize: 11, margin: 10 },
+        axisLabel: { color: "#667085", hideOverlap: true, showMinLabel: true, showMaxLabel: true, fontSize: 11, margin: 10 },
         axisTick: { show: false },
         axisLine: { lineStyle: { color: "#cbd5e1" } },
       },
@@ -925,7 +1003,7 @@ function buildCompositeOption() {
         gridIndex: 2,
         data: masterDates,
         boundaryGap: false,
-        axisLabel: { color: "#667085", hideOverlap: true, fontSize: 11, margin: 10 },
+        axisLabel: { color: "#667085", hideOverlap: true, showMinLabel: true, showMaxLabel: true, fontSize: 11, margin: 10 },
         axisTick: { show: false },
         axisLine: { lineStyle: { color: "#cbd5e1" } },
       },
@@ -934,7 +1012,7 @@ function buildCompositeOption() {
         gridIndex: 3,
         data: masterDates,
         boundaryGap: false,
-        axisLabel: { color: "#667085", hideOverlap: true, fontSize: 11, margin: 10 },
+        axisLabel: { color: "#667085", hideOverlap: true, showMinLabel: true, showMaxLabel: true, fontSize: 11, margin: 10 },
         axisTick: { show: false },
         axisLine: { lineStyle: { color: "#cbd5e1" } },
       },
@@ -1471,6 +1549,18 @@ onBeforeUnmount(() => {
             <span>当前图表范围</span>
             <strong>{{ response ? `${response.meta.left_symbol} vs ${response.meta.right_symbol}` : "暂无图表" }}</strong>
             <strong>{{ response ? `${response.meta.start_date} 至 ${response.meta.end_date}` : "" }}</strong>
+          </div>
+        </div>
+
+        <div class="export-summary-block">
+          <div class="status-header">
+            <strong>当前值汇总</strong>
+          </div>
+          <div class="export-summary-grid">
+            <article v-for="row in exportSummaryRows" :key="row.label" class="export-summary-card">
+              <span>{{ row.label }}</span>
+              <strong>{{ row.value }}</strong>
+            </article>
           </div>
         </div>
 
