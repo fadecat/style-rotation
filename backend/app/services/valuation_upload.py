@@ -35,6 +35,14 @@ class ValuationUploadResult:
     source_file: str
 
 
+@dataclass(frozen=True)
+class ValuationMetricStatus:
+    exists: bool
+    row_count: int
+    earliest_date: str | None
+    latest_date: str | None
+
+
 COMMON_COLUMN_MAP = {
     "日期": "trade_date",
     "收盘点位": "close",
@@ -212,3 +220,34 @@ def upload_valuation_csv(
         result.latest_date,
     )
     return asdict(result)
+
+
+def get_valuation_status(session: Session, symbol: str) -> dict[str, object]:
+    rows = session.query(
+        IndexValuation.trade_date,
+        IndexValuation.pe_ttm,
+        IndexValuation.pb,
+        IndexValuation.dividend_yield,
+    ).filter(IndexValuation.symbol == symbol).all()
+
+    metric_values: dict[str, list[str]] = {metric: [] for metric in SUPPORTED_METRICS}
+    for trade_date, pe_ttm, pb, dividend_yield in rows:
+        if pe_ttm is not None:
+            metric_values[METRIC_PE].append(trade_date.isoformat())
+        if pb is not None:
+            metric_values[METRIC_PB].append(trade_date.isoformat())
+        if dividend_yield is not None:
+            metric_values[METRIC_DIVIDEND].append(trade_date.isoformat())
+
+    metrics: dict[str, dict[str, object]] = {}
+    for metric_key in sorted(SUPPORTED_METRICS):
+        dates = sorted(metric_values[metric_key])
+        status = ValuationMetricStatus(
+            exists=bool(dates),
+            row_count=len(dates),
+            earliest_date=dates[0] if dates else None,
+            latest_date=dates[-1] if dates else None,
+        )
+        metrics[metric_key] = asdict(status)
+
+    return {"symbol": symbol, "metrics": metrics}

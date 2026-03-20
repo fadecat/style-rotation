@@ -16,7 +16,7 @@ from .models import Instrument
 from .schemas import MarketDataSyncRequest
 from .services.market_data import DataSyncError, init_database, seed_default_data, sync_market_data
 from .services.style_rotation import InsufficientDataError, StyleRotationParams, build_style_rotation_response
-from .services.valuation_upload import SUPPORTED_METRICS, ValuationUploadError, upload_valuation_csv
+from .services.valuation_upload import SUPPORTED_METRICS, ValuationUploadError, get_valuation_status, upload_valuation_csv
 
 logging.basicConfig(
     level=logging.INFO,
@@ -156,6 +156,27 @@ def create_app(database_url: str | None = None, seed_demo: bool = True) -> FastA
             session.rollback()
             return JSONResponse(status_code=400, content={"code": 400, "message": str(exc), "data": None})
         return {"code": 200, "message": "valuation upload success", "data": data}
+
+    @app.get("/api/valuations/status")
+    def valuation_status_endpoint(
+        symbol: str = Query(...),
+        session: Session = Depends(get_session),
+    ) -> dict[str, object]:
+        normalized_symbol = symbol.strip()
+        instrument = session.scalar(select(Instrument).where(Instrument.symbol == normalized_symbol))
+        if instrument is None:
+            return JSONResponse(
+                status_code=400,
+                content={"code": 400, "message": f"unknown symbol: {normalized_symbol}", "data": None},
+            )
+        if instrument.asset_type != "INDEX":
+            return JSONResponse(
+                status_code=400,
+                content={"code": 400, "message": f"valuation status only supports INDEX symbol: {normalized_symbol}", "data": None},
+            )
+
+        data = get_valuation_status(session, normalized_symbol)
+        return {"code": 200, "message": "success", "data": data}
 
     @app.get("/api/style-rotation")
     def style_rotation(

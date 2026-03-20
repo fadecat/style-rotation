@@ -30,6 +30,8 @@ use([
 const API_BASE = "http://127.0.0.1:8000";
 const BUY_ARROW = "path://M512 128l224 320H608v448H416V448H288z";
 const SELL_ARROW = "path://M512 896L288 576h128V128h192v448h128z";
+const LEFT_SERIES_COLOR = "#2563eb";
+const RIGHT_SERIES_COLOR = "#f97316";
 
 const instruments = ref([]);
 const loading = reactive({
@@ -55,6 +57,13 @@ const valuationUploadMessage = ref("");
 const valuationUpload = reactive({
   symbol: "",
 });
+const valuationModal = reactive({
+  open: false,
+  loading: false,
+});
+const valuationStatus = ref(null);
+const valuationStatusError = ref("");
+let valuationStatusRequestId = 0;
 
 const chartRef = ref(null);
 let chartInstance;
@@ -74,6 +83,11 @@ const LEFT_SYMBOL_POOL = new Set(["399376", "000852"]);
 const RIGHT_SYMBOL_POOL = new Set(["399373", "000922"]);
 const LEFT_NAME_KEYWORDS = ["小盘", "成长", "1000"];
 const RIGHT_NAME_KEYWORDS = ["大盘", "价值", "红利"];
+const VALUATION_METRICS = [
+  { key: "pe", label: "PE" },
+  { key: "pb", label: "PB" },
+  { key: "dividend_yield", label: "股息率" },
+];
 
 function matchesKeywords(name, keywords) {
   return keywords.some((keyword) => name.includes(keyword));
@@ -120,11 +134,48 @@ const summaryCards = computed(() => {
   ];
 });
 
+const valuationMetricCards = computed(() =>
+  VALUATION_METRICS.map((metric) => ({
+    ...metric,
+    ...(valuationStatus.value?.metrics?.[metric.key] ?? {
+      exists: false,
+      row_count: 0,
+      earliest_date: null,
+      latest_date: null,
+    }),
+  }))
+);
+
 function formatNumber(value, digits = 2) {
   if (typeof value !== "number") {
     return value;
   }
   return value.toFixed(digits);
+}
+
+function formatRange(status) {
+  if (!status?.exists) {
+    return "暂无数据";
+  }
+  return `${status.earliest_date} 至 ${status.latest_date}`;
+}
+
+function buildMetricSubtitle(metricLabel, leftLabel, rightLabel) {
+  return `{metric|${metricLabel}}  {left|左: ${leftLabel}}  {right|右: ${rightLabel}}`;
+}
+
+function buildValuationEndLabel(label) {
+  return {
+    show: true,
+    formatter: label,
+    color: "inherit",
+    fontSize: 12,
+    fontWeight: 700,
+    distance: 6,
+    backgroundColor: "rgba(255, 252, 247, 0.92)",
+    borderRadius: 10,
+    padding: [3, 8],
+  };
 }
 
 function buildStrengthAreaData(spread, predicate) {
@@ -240,6 +291,53 @@ async function analyze() {
   }
 }
 
+function openValuationModal() {
+  valuationModal.open = true;
+  valuationUploadMessage.value = "";
+  valuationStatusError.value = "";
+  if (!valuationUpload.symbol) {
+    valuationUpload.symbol = form.leftSymbol || indexInstruments.value[0]?.symbol || "";
+  }
+}
+
+function closeValuationModal() {
+  valuationModal.open = false;
+  valuationModal.loading = false;
+  valuationUploadMessage.value = "";
+  valuationStatus.value = null;
+  valuationStatusError.value = "";
+}
+
+async function fetchValuationStatus(symbol) {
+  if (!symbol) {
+    valuationStatus.value = null;
+    valuationStatusError.value = "";
+    return;
+  }
+  const requestId = ++valuationStatusRequestId;
+  valuationModal.loading = true;
+  valuationStatusError.value = "";
+  try {
+    const { data } = await axios.get(`${API_BASE}/api/valuations/status`, {
+      params: { symbol },
+    });
+    if (requestId !== valuationStatusRequestId || !valuationModal.open || valuationUpload.symbol !== symbol) {
+      return;
+    }
+    valuationStatus.value = data.data;
+  } catch (error) {
+    if (requestId !== valuationStatusRequestId || !valuationModal.open || valuationUpload.symbol !== symbol) {
+      return;
+    }
+    valuationStatus.value = null;
+    valuationStatusError.value = error.response?.data?.message ?? "无法加载估值数据状态";
+  } finally {
+    if (requestId === valuationStatusRequestId) {
+      valuationModal.loading = false;
+    }
+  }
+}
+
 function triggerValuationUpload(metricType) {
   const mapping = {
     pe: peFileInputRef,
@@ -287,6 +385,7 @@ async function uploadValuationFile(metricType, event) {
     const result = data.data;
     valuationUploadMessage.value =
       `${metricType.toUpperCase()} 上传成功：${selectedValuationInstrument.value.name}(${result.symbol})，${result.row_count} 行，范围 ${result.earliest_date} 至 ${result.latest_date}`;
+    await fetchValuationStatus(valuationUpload.symbol);
   } catch (error) {
     errorMessage.value = error.response?.data?.message ?? "估值文件上传失败";
   } finally {
@@ -384,6 +483,50 @@ function buildCompositeOption() {
 
   return {
     animation: false,
+    title: [
+      {
+        text: buildMetricSubtitle("PE", leftLabel, rightLabel),
+        top: "35.5%",
+        left: "7%",
+        textStyle: {
+          fontSize: 12,
+          fontWeight: 700,
+          rich: {
+            metric: { color: "#475467" },
+            left: { color: LEFT_SERIES_COLOR },
+            right: { color: RIGHT_SERIES_COLOR },
+          },
+        },
+      },
+      {
+        text: buildMetricSubtitle("PB", leftLabel, rightLabel),
+        top: "54.5%",
+        left: "7%",
+        textStyle: {
+          fontSize: 12,
+          fontWeight: 700,
+          rich: {
+            metric: { color: "#475467" },
+            left: { color: LEFT_SERIES_COLOR },
+            right: { color: RIGHT_SERIES_COLOR },
+          },
+        },
+      },
+      {
+        text: buildMetricSubtitle("股息率", leftLabel, rightLabel),
+        top: "73.5%",
+        left: "7%",
+        textStyle: {
+          fontSize: 12,
+          fontWeight: 700,
+          rich: {
+            metric: { color: "#475467" },
+            left: { color: LEFT_SERIES_COLOR },
+            right: { color: RIGHT_SERIES_COLOR },
+          },
+        },
+      },
+    ],
     legend: {
       top: 16,
       left: "center",
@@ -448,10 +591,10 @@ function buildCompositeOption() {
       },
     ],
     grid: [
-      { top: "7%", height: "29%", left: "7%", right: "7%" },
-      { top: "40%", height: "15%", left: "7%", right: "7%" },
-      { top: "59%", height: "15%", left: "7%", right: "7%" },
-      { top: "78%", height: "11%", left: "7%", right: "7%" },
+      { top: "7%", height: "29%", left: "7%", right: "12%" },
+      { top: "40%", height: "15%", left: "7%", right: "12%" },
+      { top: "59%", height: "15%", left: "7%", right: "12%" },
+      { top: "78%", height: "11%", left: "7%", right: "12%" },
     ],
     xAxis: [
       {
@@ -511,7 +654,7 @@ function buildCompositeOption() {
         nameGap: 42,
         position: "left",
         scale: true,
-        axisLabel: { color: "#2563eb", formatter: (value) => Number(value).toFixed(1) },
+        axisLabel: { color: LEFT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(1) },
         axisLine: { show: false },
         splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
       },
@@ -523,7 +666,7 @@ function buildCompositeOption() {
         nameGap: 42,
         position: "left",
         scale: true,
-        axisLabel: { color: "#2563eb", formatter: (value) => Number(value).toFixed(1) },
+        axisLabel: { color: LEFT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(1) },
         axisLine: { show: false },
         splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
       },
@@ -535,7 +678,7 @@ function buildCompositeOption() {
         nameGap: 42,
         position: "left",
         scale: true,
-        axisLabel: { color: "#2563eb", formatter: (value) => `${(Number(value) * 100).toFixed(1)}%` },
+        axisLabel: { color: LEFT_SERIES_COLOR, formatter: (value) => `${(Number(value) * 100).toFixed(1)}%` },
         axisLine: { show: false },
         splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
       },
@@ -547,7 +690,7 @@ function buildCompositeOption() {
         nameGap: 44,
         position: "right",
         scale: true,
-        axisLabel: { color: "#f97316", formatter: (value) => Number(value).toFixed(1) },
+        axisLabel: { color: RIGHT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(1) },
         axisLine: { show: false },
         splitLine: { show: false },
       },
@@ -559,7 +702,7 @@ function buildCompositeOption() {
         nameGap: 44,
         position: "right",
         scale: true,
-        axisLabel: { color: "#f97316", formatter: (value) => Number(value).toFixed(1) },
+        axisLabel: { color: RIGHT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(1) },
         axisLine: { show: false },
         splitLine: { show: false },
       },
@@ -571,7 +714,7 @@ function buildCompositeOption() {
         nameGap: 44,
         position: "right",
         scale: true,
-        axisLabel: { color: "#f97316", formatter: (value) => `${(Number(value) * 100).toFixed(1)}%` },
+        axisLabel: { color: RIGHT_SERIES_COLOR, formatter: (value) => `${(Number(value) * 100).toFixed(1)}%` },
         axisLine: { show: false },
         splitLine: { show: false },
       },
@@ -671,7 +814,10 @@ function buildCompositeOption() {
         data: peSeries.left,
         symbol: "none",
         connectNulls: false,
-        lineStyle: { width: 2.1, color: "#2563eb" },
+        lineStyle: { width: 2.4, color: LEFT_SERIES_COLOR },
+        endLabel: buildValuationEndLabel(leftLabel),
+        labelLayout: { moveOverlap: "shiftY" },
+        emphasis: { focus: "series" },
       },
       {
         name: `${rightLabel} PE`,
@@ -681,7 +827,10 @@ function buildCompositeOption() {
         data: peSeries.right,
         symbol: "none",
         connectNulls: false,
-        lineStyle: { width: 2.1, color: "#f97316" },
+        lineStyle: { width: 2.4, color: RIGHT_SERIES_COLOR },
+        endLabel: buildValuationEndLabel(rightLabel),
+        labelLayout: { moveOverlap: "shiftY" },
+        emphasis: { focus: "series" },
       },
       {
         name: `${leftLabel} PB`,
@@ -691,7 +840,10 @@ function buildCompositeOption() {
         data: pbSeries.left,
         symbol: "none",
         connectNulls: false,
-        lineStyle: { width: 2.1, color: "#2563eb" },
+        lineStyle: { width: 2.4, color: LEFT_SERIES_COLOR },
+        endLabel: buildValuationEndLabel(leftLabel),
+        labelLayout: { moveOverlap: "shiftY" },
+        emphasis: { focus: "series" },
       },
       {
         name: `${rightLabel} PB`,
@@ -701,7 +853,10 @@ function buildCompositeOption() {
         data: pbSeries.right,
         symbol: "none",
         connectNulls: false,
-        lineStyle: { width: 2.1, color: "#f97316" },
+        lineStyle: { width: 2.4, color: RIGHT_SERIES_COLOR },
+        endLabel: buildValuationEndLabel(rightLabel),
+        labelLayout: { moveOverlap: "shiftY" },
+        emphasis: { focus: "series" },
       },
       {
         name: `${leftLabel} 股息率`,
@@ -711,7 +866,10 @@ function buildCompositeOption() {
         data: dividendSeries.left,
         symbol: "none",
         connectNulls: false,
-        lineStyle: { width: 2.1, color: "#2563eb" },
+        lineStyle: { width: 2.4, color: LEFT_SERIES_COLOR },
+        endLabel: buildValuationEndLabel(leftLabel),
+        labelLayout: { moveOverlap: "shiftY" },
+        emphasis: { focus: "series" },
       },
       {
         name: `${rightLabel} 股息率`,
@@ -721,7 +879,10 @@ function buildCompositeOption() {
         data: dividendSeries.right,
         symbol: "none",
         connectNulls: false,
-        lineStyle: { width: 2.1, color: "#f97316" },
+        lineStyle: { width: 2.4, color: RIGHT_SERIES_COLOR },
+        endLabel: buildValuationEndLabel(rightLabel),
+        labelLayout: { moveOverlap: "shiftY" },
+        emphasis: { focus: "series" },
       },
     ],
   };
@@ -741,6 +902,17 @@ watch(
     await nextTick();
     renderChart();
   }
+);
+
+watch(
+  () => [valuationModal.open, valuationUpload.symbol],
+  async ([open, symbol]) => {
+    if (!open) {
+      return;
+    }
+    await fetchValuationStatus(symbol);
+  },
+  { immediate: false }
 );
 
 onMounted(async () => {
@@ -769,6 +941,7 @@ onBeforeUnmount(() => {
         <button class="ghost-button" :disabled="loading.sync" @click="syncData">
           {{ loading.sync ? "同步中..." : "同步数据" }}
         </button>
+        <button class="ghost-button" :disabled="loading.instruments" @click="openValuationModal">估值上传</button>
         <button class="primary-button" :disabled="loading.analysis" @click="analyze">
           {{ loading.analysis ? "分析中..." : "开始分析" }}
         </button>
@@ -822,45 +995,6 @@ onBeforeUnmount(() => {
       {{ errorMessage }}
     </section>
 
-    <section class="valuation-upload-panel">
-      <div class="valuation-upload-header">
-        <div>
-          <span class="section-kicker">Valuation Upload</span>
-          <h2>目标指数估值 CSV 上传</h2>
-        </div>
-        <div class="field">
-          <label>目标指数代码</label>
-          <select v-model="valuationUpload.symbol" :disabled="loading.instruments">
-            <option value="">请选择指数</option>
-            <option v-for="item in indexInstruments" :key="item.symbol" :value="item.symbol">
-              {{ item.symbol }} / {{ item.name }}
-            </option>
-          </select>
-        </div>
-      </div>
-      <div class="valuation-upload-actions">
-        <button class="upload-button" :disabled="loading.sync || !valuationUpload.symbol" @click="triggerValuationUpload('pe')">上传 PE CSV</button>
-        <button class="upload-button" :disabled="loading.sync || !valuationUpload.symbol" @click="triggerValuationUpload('pb')">上传 PB CSV</button>
-        <button class="upload-button" :disabled="loading.sync || !valuationUpload.symbol" @click="triggerValuationUpload('dividend_yield')">
-          上传股息率 CSV
-        </button>
-      </div>
-      <p class="upload-target">
-        当前目标：
-        <strong>{{ selectedValuationInstrument ? `${selectedValuationInstrument.symbol} / ${selectedValuationInstrument.name}` : "未选择" }}</strong>
-      </p>
-      <input ref="peFileInputRef" class="hidden-input" type="file" accept=".csv,text/csv" @change="uploadValuationFile('pe', $event)" />
-      <input ref="pbFileInputRef" class="hidden-input" type="file" accept=".csv,text/csv" @change="uploadValuationFile('pb', $event)" />
-      <input
-        ref="dividendFileInputRef"
-        class="hidden-input"
-        type="file"
-        accept=".csv,text/csv"
-        @change="uploadValuationFile('dividend_yield', $event)"
-      />
-      <p v-if="valuationUploadMessage" class="upload-success">{{ valuationUploadMessage }}</p>
-    </section>
-
     <section class="summary-grid">
       <article v-for="card in summaryCards" :key="card.label" class="summary-card">
         <span>{{ card.label }}</span>
@@ -886,6 +1020,70 @@ onBeforeUnmount(() => {
     <section class="charts-grid">
       <article class="chart-card chart-card-composite">
         <div ref="chartRef" class="chart-canvas chart-canvas-composite"></div>
+      </article>
+    </section>
+
+    <section v-if="valuationModal.open" class="modal-shell" @click.self="closeValuationModal">
+      <article class="modal-panel">
+        <div class="modal-header">
+          <div>
+            <span class="section-kicker">Valuation Upload</span>
+            <h2>目标指数估值 CSV 上传</h2>
+          </div>
+          <button class="modal-close" @click="closeValuationModal">关闭</button>
+        </div>
+
+        <div class="modal-grid">
+          <div class="field">
+            <label>目标指数代码</label>
+            <select v-model="valuationUpload.symbol" :disabled="loading.instruments || valuationModal.loading">
+              <option value="">请选择指数</option>
+              <option v-for="item in indexInstruments" :key="item.symbol" :value="item.symbol">
+                {{ item.symbol }} / {{ item.name }}
+              </option>
+            </select>
+          </div>
+          <div class="modal-target">
+            <span>当前目标</span>
+            <strong>{{ selectedValuationInstrument ? `${selectedValuationInstrument.symbol} / ${selectedValuationInstrument.name}` : "未选择" }}</strong>
+          </div>
+        </div>
+
+        <div class="valuation-status-block">
+          <div class="status-header">
+            <strong>数据库已有估值数据</strong>
+            <span v-if="valuationModal.loading">读取中...</span>
+          </div>
+          <p v-if="valuationStatusError" class="status-error">{{ valuationStatusError }}</p>
+          <div class="status-grid">
+            <article v-for="metric in valuationMetricCards" :key="metric.key" class="status-card">
+              <span>{{ metric.label }}</span>
+              <strong>{{ metric.exists ? "已存在" : "不存在" }}</strong>
+              <p>条数：{{ metric.row_count }}</p>
+              <p>范围：{{ formatRange(metric) }}</p>
+            </article>
+          </div>
+        </div>
+
+        <div class="valuation-upload-actions">
+          <button class="upload-button" :disabled="loading.sync || !valuationUpload.symbol" @click="triggerValuationUpload('pe')">上传 PE CSV</button>
+          <button class="upload-button" :disabled="loading.sync || !valuationUpload.symbol" @click="triggerValuationUpload('pb')">上传 PB CSV</button>
+          <button class="upload-button" :disabled="loading.sync || !valuationUpload.symbol" @click="triggerValuationUpload('dividend_yield')">
+            上传股息率 CSV
+          </button>
+        </div>
+
+        <p v-if="valuationUploadMessage" class="upload-success">{{ valuationUploadMessage }}</p>
+
+        <input ref="peFileInputRef" class="hidden-input" type="file" accept=".csv,text/csv" @change="uploadValuationFile('pe', $event)" />
+        <input ref="pbFileInputRef" class="hidden-input" type="file" accept=".csv,text/csv" @change="uploadValuationFile('pb', $event)" />
+        <input
+          ref="dividendFileInputRef"
+          class="hidden-input"
+          type="file"
+          accept=".csv,text/csv"
+          @change="uploadValuationFile('dividend_yield', $event)"
+        />
       </article>
     </section>
   </main>

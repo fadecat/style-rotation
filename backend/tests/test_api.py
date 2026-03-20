@@ -360,6 +360,35 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(valuations["dividend_yield"]["left"], [None, 0.021])
         self.assertEqual(valuations["dividend_yield"]["right"], [0.031, None])
 
+    def test_valuation_status_endpoint_returns_metric_ranges(self) -> None:
+        self.seed_index_instrument("000922", "中证红利")
+
+        session = self.app.state.session_factory()
+        try:
+            session.add_all(
+                [
+                    IndexValuation(symbol="000922", trade_date=date(2026, 3, 18), pe_ttm=Decimal("8.1")),
+                    IndexValuation(symbol="000922", trade_date=date(2026, 3, 20), pe_ttm=Decimal("8.2")),
+                    IndexValuation(symbol="000922", trade_date=date(2026, 3, 19), pb=Decimal("0.9")),
+                ]
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        response = self.client.get("/api/valuations/status", params={"symbol": "000922"})
+
+        self.assertEqual(response.status_code, 200)
+        metrics = response.json()["data"]["metrics"]
+        self.assertEqual(metrics["pe"]["exists"], True)
+        self.assertEqual(metrics["pe"]["row_count"], 2)
+        self.assertEqual(metrics["pe"]["earliest_date"], "2026-03-18")
+        self.assertEqual(metrics["pe"]["latest_date"], "2026-03-20")
+        self.assertEqual(metrics["pb"]["exists"], True)
+        self.assertEqual(metrics["pb"]["row_count"], 1)
+        self.assertEqual(metrics["dividend_yield"]["exists"], False)
+        self.assertEqual(metrics["dividend_yield"]["row_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
