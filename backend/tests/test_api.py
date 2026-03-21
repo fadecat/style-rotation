@@ -311,21 +311,36 @@ class ApiTestCase(unittest.TestCase):
         try:
             session.add_all(
                 [
-                    IndexValuation(symbol="AAA", trade_date=date(2026, 3, 18), pe_ttm=Decimal("10.1"), pb=Decimal("1.2")),
+                    IndexValuation(
+                        symbol="AAA",
+                        trade_date=date(2026, 3, 18),
+                        pe_ttm=Decimal("10.1"),
+                        pe_percentile=Decimal("0.31"),
+                        pb=Decimal("1.2"),
+                        pb_percentile=Decimal("0.24"),
+                    ),
                     IndexValuation(
                         symbol="AAA",
                         trade_date=date(2026, 3, 20),
                         pe_ttm=Decimal("10.3"),
+                        pe_percentile=Decimal("0.34"),
                         dividend_yield=Decimal("0.021"),
                     ),
                     IndexValuation(
                         symbol="BBB",
                         trade_date=date(2026, 3, 19),
                         pe_ttm=Decimal("20.2"),
+                        pe_percentile=Decimal("0.81"),
                         pb=Decimal("2.2"),
+                        pb_percentile=Decimal("0.73"),
                         dividend_yield=Decimal("0.031"),
                     ),
-                    IndexValuation(symbol="BBB", trade_date=date(2026, 3, 20), pb=Decimal("2.3")),
+                    IndexValuation(
+                        symbol="BBB",
+                        trade_date=date(2026, 3, 20),
+                        pb=Decimal("2.3"),
+                        pb_percentile=Decimal("0.78"),
+                    ),
                 ]
             )
             session.commit()
@@ -351,10 +366,14 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(valuations["pe"]["dates"], ["2026-03-18", "2026-03-19", "2026-03-20"])
         self.assertEqual(valuations["pe"]["left"], [10.1, None, 10.3])
         self.assertEqual(valuations["pe"]["right"], [None, 20.2, None])
+        self.assertEqual(valuations["pe"]["left_percentile"], [0.31, None, 0.34])
+        self.assertEqual(valuations["pe"]["right_percentile"], [None, 0.81, None])
 
         self.assertEqual(valuations["pb"]["dates"], ["2026-03-18", "2026-03-19", "2026-03-20"])
         self.assertEqual(valuations["pb"]["left"], [1.2, None, None])
         self.assertEqual(valuations["pb"]["right"], [None, 2.2, 2.3])
+        self.assertEqual(valuations["pb"]["left_percentile"], [0.24, None, None])
+        self.assertEqual(valuations["pb"]["right_percentile"], [None, 0.73, 0.78])
 
         self.assertEqual(valuations["dividend_yield"]["dates"], ["2026-03-19", "2026-03-20"])
         self.assertEqual(valuations["dividend_yield"]["left"], [None, 0.021])

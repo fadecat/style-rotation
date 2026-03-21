@@ -231,6 +231,7 @@ const exportSummaryRows = computed(() => {
   ];
 });
 
+
 function formatNumber(value, digits = 2) {
   if (typeof value !== "number") {
     return value;
@@ -387,24 +388,6 @@ function getSyncFreshness(status) {
   };
 }
 
-function buildMetricSubtitle(metricLabel, leftLabel, rightLabel) {
-  return `{metric|${metricLabel}}  {left|左: ${leftLabel}}  {right|右: ${rightLabel}}`;
-}
-
-function buildValuationEndLabel(label) {
-  return {
-    show: true,
-    formatter: label,
-    color: "inherit",
-    fontSize: 12,
-    fontWeight: 700,
-    distance: 6,
-    backgroundColor: "rgba(255, 252, 247, 0.92)",
-    borderRadius: 10,
-    padding: [3, 8],
-  };
-}
-
 function buildStrengthAreaData(spread, predicate) {
   return spread.map((value) => (predicate(value) ? value : "-"));
 }
@@ -447,6 +430,9 @@ function formatTooltipValue(seriesName, value) {
   if (value === "-" || value == null || Number.isNaN(value)) {
     return "--";
   }
+  if (seriesName.includes("分位")) {
+    return Number(value).toFixed(1);
+  }
   if (seriesName.includes("股息率")) {
     return `${(Number(value) * 100).toFixed(2)}%`;
   }
@@ -488,6 +474,13 @@ function formatMetricBadgeValue(value, metricKey) {
   return Number(value).toFixed(2);
 }
 
+function formatPercentileBadgeValue(value) {
+  if (value == null || Number.isNaN(value)) {
+    return "--";
+  }
+  return Number(value).toFixed(1);
+}
+
 function tooltipFormatter(params) {
   if (!params?.length) {
     return "";
@@ -506,9 +499,14 @@ function tooltipFormatter(params) {
     const color = extractSeriesColor(item.color);
     const marker =
       `<span style="display:inline-block;margin-right:6px;border-radius:10px;width:10px;height:10px;background:${color};"></span>`;
+    let valueText = formatTooltipValue(item.seriesName, item.value);
+    if (item.seriesName.includes("百分位")) {
+      const rawValueText = formatMetricBadgeValue(item.data?.rawValue, item.data?.metricKey);
+      valueText = `${valueText} / ${rawValueText}`;
+    }
     html += `<div style="display:flex;justify-content:space-between;gap:16px;width:240px;margin-top:4px;">
       <span style="color:#4b5563;">${marker}${item.seriesName}</span>
-      <span style="font-weight:700;color:#111827;">${formatTooltipValue(item.seriesName, item.value)}</span>
+      <span style="font-weight:700;color:#111827;">${valueText}</span>
     </div>`;
   });
 
@@ -827,6 +825,95 @@ function alignMetricToDates(metricData, masterDates) {
   };
 }
 
+function lowerBound(sortedValues, target) {
+  let left = 0;
+  let right = sortedValues.length;
+  while (left < right) {
+    const middle = Math.floor((left + right) / 2);
+    if (sortedValues[middle] < target) {
+      left = middle + 1;
+    } else {
+      right = middle;
+    }
+  }
+  return left;
+}
+
+function upperBound(sortedValues, target) {
+  let left = 0;
+  let right = sortedValues.length;
+  while (left < right) {
+    const middle = Math.floor((left + right) / 2);
+    if (sortedValues[middle] <= target) {
+      left = middle + 1;
+    } else {
+      right = middle;
+    }
+  }
+  return left;
+}
+
+function calculatePercentileRank(sortedValues, value) {
+  if (!sortedValues.length || value == null || Number.isNaN(value)) {
+    return null;
+  }
+  if (sortedValues.length === 1) {
+    return 50;
+  }
+  const lower = lowerBound(sortedValues, value);
+  const upper = upperBound(sortedValues, value) - 1;
+  return (((lower + upper) / 2) / (sortedValues.length - 1)) * 100;
+}
+
+function calculateWindowQuantile(sortedValues, ratio) {
+  if (!sortedValues.length) {
+    return null;
+  }
+  if (sortedValues.length === 1) {
+    return sortedValues[0];
+  }
+  const position = (sortedValues.length - 1) * ratio;
+  const lowerIndex = Math.floor(position);
+  const upperIndex = Math.ceil(position);
+  if (lowerIndex === upperIndex) {
+    return sortedValues[lowerIndex];
+  }
+  const weight = position - lowerIndex;
+  return sortedValues[lowerIndex] + (sortedValues[upperIndex] - sortedValues[lowerIndex]) * weight;
+}
+
+function buildPercentileMetric(values) {
+  const sortedValues = values
+    .filter((value) => value != null && !Number.isNaN(value))
+    .map((value) => Number(value))
+    .sort((left, right) => left - right);
+
+  return {
+    percentiles: values.map((value) => {
+      const rank = calculatePercentileRank(sortedValues, value == null ? null : Number(value));
+      return rank == null ? null : Number(rank.toFixed(2));
+    }),
+    p30: calculateWindowQuantile(sortedValues, 0.3),
+    p70: calculateWindowQuantile(sortedValues, 0.7),
+  };
+}
+
+function findLatestMetricSnapshot(values, percentiles) {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const value = values[index];
+    if (value != null && !Number.isNaN(value)) {
+      return {
+        value: Number(value),
+        percentile: percentiles[index] == null || Number.isNaN(percentiles[index]) ? null : Number(percentiles[index]),
+      };
+    }
+  }
+  return {
+    value: null,
+    percentile: null,
+  };
+}
+
 function buildCompositeOption() {
   const data = response.value;
   if (!data) {
@@ -853,7 +940,14 @@ function buildCompositeOption() {
   const globalP10 = buildFlatReference(masterDates, summary.global_p10);
   const peSeries = alignMetricToDates(valuations.pe, masterDates);
   const pbSeries = alignMetricToDates(valuations.pb, masterDates);
-  const dividendSeries = alignMetricToDates(valuations.dividend_yield, masterDates);
+  const peLeftMetric = buildPercentileMetric(peSeries.left);
+  const peRightMetric = buildPercentileMetric(peSeries.right);
+  const pbLeftMetric = buildPercentileMetric(pbSeries.left);
+  const pbRightMetric = buildPercentileMetric(pbSeries.right);
+  const peLeftLatest = findLatestMetricSnapshot(peSeries.left, peLeftMetric.percentiles);
+  const peRightLatest = findLatestMetricSnapshot(peSeries.right, peRightMetric.percentiles);
+  const pbLeftLatest = findLatestMetricSnapshot(pbSeries.left, pbLeftMetric.percentiles);
+  const pbRightLatest = findLatestMetricSnapshot(pbSeries.right, pbRightMetric.percentiles);
   const zoomRange = buildDefaultZoomRange(masterDates.length);
   const buySignals = signals
     .filter((item) => item.type === "buy")
@@ -861,50 +955,98 @@ function buildCompositeOption() {
   const sellSignals = signals
     .filter((item) => item.type === "sell")
     .map((item) => [item.date, item.spread]);
+  const peLeftPercentileSeries = peLeftMetric.percentiles.map((value, index) => ({
+    value,
+    rawValue: peSeries.left[index],
+    metricKey: "pe",
+  }));
+  const peRightPercentileSeries = peRightMetric.percentiles.map((value, index) => ({
+    value,
+    rawValue: peSeries.right[index],
+    metricKey: "pe",
+  }));
+  const pbLeftPercentileSeries = pbLeftMetric.percentiles.map((value, index) => ({
+    value,
+    rawValue: pbSeries.left[index],
+    metricKey: "pb",
+  }));
+  const pbRightPercentileSeries = pbRightMetric.percentiles.map((value, index) => ({
+    value,
+    rawValue: pbSeries.right[index],
+    metricKey: "pb",
+  }));
 
   return {
     animation: false,
     title: [
       {
-        text: buildMetricSubtitle("PE", leftLabel, rightLabel),
-        top: "35.5%",
+        text: "收益率差值",
+        top: "2.8%",
         left: "7%",
         textStyle: {
-          fontSize: 12,
+          fontSize: 13,
           fontWeight: 700,
-          rich: {
-            metric: { color: "#475467" },
-            left: { color: LEFT_SERIES_COLOR },
-            right: { color: RIGHT_SERIES_COLOR },
-          },
+          color: "#475467",
         },
       },
       {
-        text: buildMetricSubtitle("PB", leftLabel, rightLabel),
-        top: "54.5%",
+        text: "PE 百分位",
+        top: "34.2%",
         left: "7%",
         textStyle: {
           fontSize: 12,
           fontWeight: 700,
-          rich: {
-            metric: { color: "#475467" },
-            left: { color: LEFT_SERIES_COLOR },
-            right: { color: RIGHT_SERIES_COLOR },
-          },
+          color: "#475467",
         },
       },
       {
-        text: buildMetricSubtitle("股息率", leftLabel, rightLabel),
-        top: "73.5%",
+        text: `左 ${leftLabel}  PE ${formatMetricBadgeValue(peLeftLatest.value, "pe")}  分位 ${formatPercentileBadgeValue(peLeftLatest.percentile)}`,
+        top: "38.8%",
         left: "7%",
         textStyle: {
           fontSize: 12,
           fontWeight: 700,
-          rich: {
-            metric: { color: "#475467" },
-            left: { color: LEFT_SERIES_COLOR },
-            right: { color: RIGHT_SERIES_COLOR },
-          },
+          color: LEFT_SERIES_COLOR,
+        },
+      },
+      {
+        text: `右 ${rightLabel}  PE ${formatMetricBadgeValue(peRightLatest.value, "pe")}  分位 ${formatPercentileBadgeValue(peRightLatest.percentile)}`,
+        top: "49.6%",
+        left: "7%",
+        textStyle: {
+          fontSize: 12,
+          fontWeight: 700,
+          color: RIGHT_SERIES_COLOR,
+        },
+      },
+      {
+        text: "PB 百分位",
+        top: "61.4%",
+        left: "7%",
+        textStyle: {
+          fontSize: 12,
+          fontWeight: 700,
+          color: "#475467",
+        },
+      },
+      {
+        text: `左 ${leftLabel}  PB ${formatMetricBadgeValue(pbLeftLatest.value, "pb")}  分位 ${formatPercentileBadgeValue(pbLeftLatest.percentile)}`,
+        top: "66%",
+        left: "7%",
+        textStyle: {
+          fontSize: 12,
+          fontWeight: 700,
+          color: LEFT_SERIES_COLOR,
+        },
+      },
+      {
+        text: `右 ${rightLabel}  PB ${formatMetricBadgeValue(pbRightLatest.value, "pb")}  分位 ${formatPercentileBadgeValue(pbRightLatest.percentile)}`,
+        top: "76.8%",
+        left: "7%",
+        textStyle: {
+          fontSize: 12,
+          fontWeight: 700,
+          color: RIGHT_SERIES_COLOR,
         },
       },
     ],
@@ -925,12 +1067,10 @@ function buildCompositeOption() {
         "MA20",
         "全局P90",
         "全局P10",
-        `${leftLabel} PE`,
-        `${rightLabel} PE`,
-        `${leftLabel} PB`,
-        `${rightLabel} PB`,
-        `${leftLabel} 股息率`,
-        `${rightLabel} 股息率`,
+        `${leftLabel} PE 百分位`,
+        `${rightLabel} PE 百分位`,
+        `${leftLabel} PB 百分位`,
+        `${rightLabel} PB 百分位`,
       ],
     },
     tooltip: {
@@ -953,12 +1093,12 @@ function buildCompositeOption() {
       formatter: tooltipFormatter,
     },
     axisPointer: {
-      link: [{ xAxisIndex: [0, 1, 2, 3] }],
+      link: [{ xAxisIndex: [0, 1, 2, 3, 4] }],
     },
     dataZoom: [
       {
         type: "slider",
-        xAxisIndex: [0, 1, 2, 3],
+        xAxisIndex: [0, 1, 2, 3, 4],
         bottom: 14,
         height: 18,
         start: zoomRange.start,
@@ -968,16 +1108,17 @@ function buildCompositeOption() {
       },
       {
         type: "inside",
-        xAxisIndex: [0, 1, 2, 3],
+        xAxisIndex: [0, 1, 2, 3, 4],
         start: zoomRange.start,
         end: zoomRange.end,
       },
     ],
     grid: [
-      { top: "7%", height: "29%", left: "7%", right: "12%" },
-      { top: "40%", height: "15%", left: "7%", right: "12%" },
-      { top: "59%", height: "15%", left: "7%", right: "12%" },
-      { top: "78%", height: "11%", left: "7%", right: "12%" },
+      { top: "7%", height: "23%", left: "7%", right: "12%" },
+      { top: "41%", height: "8%", left: "7%", right: "12%" },
+      { top: "51.8%", height: "8%", left: "7%", right: "12%" },
+      { top: "68.2%", height: "8%", left: "7%", right: "12%" },
+      { top: "79%", height: "8%", left: "7%", right: "12%" },
     ],
     xAxis: [
       {
@@ -994,7 +1135,7 @@ function buildCompositeOption() {
         gridIndex: 1,
         data: masterDates,
         boundaryGap: false,
-        axisLabel: { color: "#667085", hideOverlap: true, showMinLabel: true, showMaxLabel: true, fontSize: 11, margin: 10 },
+        axisLabel: { show: false },
         axisTick: { show: false },
         axisLine: { lineStyle: { color: "#cbd5e1" } },
       },
@@ -1003,13 +1144,22 @@ function buildCompositeOption() {
         gridIndex: 2,
         data: masterDates,
         boundaryGap: false,
-        axisLabel: { color: "#667085", hideOverlap: true, showMinLabel: true, showMaxLabel: true, fontSize: 11, margin: 10 },
+        axisLabel: { show: false },
         axisTick: { show: false },
         axisLine: { lineStyle: { color: "#cbd5e1" } },
       },
       {
         type: "category",
         gridIndex: 3,
+        data: masterDates,
+        boundaryGap: false,
+        axisLabel: { show: false },
+        axisTick: { show: false },
+        axisLine: { lineStyle: { color: "#cbd5e1" } },
+      },
+      {
+        type: "category",
+        gridIndex: 4,
         data: masterDates,
         boundaryGap: false,
         axisLabel: { color: "#667085", hideOverlap: true, showMinLabel: true, showMaxLabel: true, fontSize: 11, margin: 10 },
@@ -1032,72 +1182,52 @@ function buildCompositeOption() {
       {
         type: "value",
         gridIndex: 1,
-        name: `${leftLabel} PE`,
+        name: "左侧PE分位",
         nameLocation: "middle",
         nameGap: 42,
         position: "left",
-        scale: true,
-        axisLabel: { color: LEFT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(1) },
+        min: 0,
+        max: 100,
+        axisLabel: { color: LEFT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(0) },
         axisLine: { show: false },
         splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
       },
       {
         type: "value",
         gridIndex: 2,
-        name: `${leftLabel} PB`,
+        name: "右侧PE分位",
         nameLocation: "middle",
         nameGap: 42,
         position: "left",
-        scale: true,
-        axisLabel: { color: LEFT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(1) },
+        min: 0,
+        max: 100,
+        axisLabel: { color: RIGHT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(0) },
         axisLine: { show: false },
         splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
       },
       {
         type: "value",
         gridIndex: 3,
-        name: `${leftLabel} 股息率`,
+        name: "左侧PB分位",
         nameLocation: "middle",
         nameGap: 42,
         position: "left",
-        scale: true,
-        axisLabel: { color: LEFT_SERIES_COLOR, formatter: (value) => `${(Number(value) * 100).toFixed(1)}%` },
+        min: 0,
+        max: 100,
+        axisLabel: { color: LEFT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(0) },
         axisLine: { show: false },
         splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.18)" } },
       },
       {
         type: "value",
-        gridIndex: 1,
-        name: `${rightLabel} PE`,
+        gridIndex: 4,
+        name: "右侧PB分位",
         nameLocation: "middle",
         nameGap: 44,
-        position: "right",
-        scale: true,
-        axisLabel: { color: RIGHT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(1) },
-        axisLine: { show: false },
-        splitLine: { show: false },
-      },
-      {
-        type: "value",
-        gridIndex: 2,
-        name: `${rightLabel} PB`,
-        nameLocation: "middle",
-        nameGap: 44,
-        position: "right",
-        scale: true,
-        axisLabel: { color: RIGHT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(1) },
-        axisLine: { show: false },
-        splitLine: { show: false },
-      },
-      {
-        type: "value",
-        gridIndex: 3,
-        name: `${rightLabel} 股息率`,
-        nameLocation: "middle",
-        nameGap: 44,
-        position: "right",
-        scale: true,
-        axisLabel: { color: RIGHT_SERIES_COLOR, formatter: (value) => `${(Number(value) * 100).toFixed(1)}%` },
+        position: "left",
+        min: 0,
+        max: 100,
+        axisLabel: { color: RIGHT_SERIES_COLOR, formatter: (value) => Number(value).toFixed(0) },
         axisLine: { show: false },
         splitLine: { show: false },
       },
@@ -1190,82 +1320,128 @@ function buildCompositeOption() {
         z: 6,
       },
       {
-        name: `${leftLabel} PE`,
+        name: `${leftLabel} PE 百分位`,
         type: "line",
         xAxisIndex: 1,
         yAxisIndex: 1,
-        data: peSeries.left,
+        data: peLeftPercentileSeries,
         symbol: "none",
         connectNulls: false,
         lineStyle: { width: 2.4, color: LEFT_SERIES_COLOR },
-        endLabel: buildValuationEndLabel(leftLabel),
-        labelLayout: { moveOverlap: "shiftY" },
         emphasis: { focus: "series" },
       },
       {
-        name: `${rightLabel} PE`,
+        name: "30分位线",
         type: "line",
         xAxisIndex: 1,
-        yAxisIndex: 4,
-        data: peSeries.right,
+        yAxisIndex: 1,
+        data: buildFlatReference(masterDates, 30),
         symbol: "none",
-        connectNulls: false,
-        lineStyle: { width: 2.4, color: RIGHT_SERIES_COLOR },
-        endLabel: buildValuationEndLabel(rightLabel),
-        labelLayout: { moveOverlap: "shiftY" },
-        emphasis: { focus: "series" },
+        lineStyle: { width: 1.1, type: "dashed", color: "#2a9d8f" },
+        emphasis: { disabled: true },
       },
       {
-        name: `${leftLabel} PB`,
+        name: "70分位线",
+        type: "line",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: buildFlatReference(masterDates, 70),
+        symbol: "none",
+        lineStyle: { width: 1.1, type: "dashed", color: "#d9485f" },
+        emphasis: { disabled: true },
+      },
+      {
+        name: `${rightLabel} PE 百分位`,
         type: "line",
         xAxisIndex: 2,
         yAxisIndex: 2,
-        data: pbSeries.left,
-        symbol: "none",
-        connectNulls: false,
-        lineStyle: { width: 2.4, color: LEFT_SERIES_COLOR },
-        endLabel: buildValuationEndLabel(leftLabel),
-        labelLayout: { moveOverlap: "shiftY" },
-        emphasis: { focus: "series" },
-      },
-      {
-        name: `${rightLabel} PB`,
-        type: "line",
-        xAxisIndex: 2,
-        yAxisIndex: 5,
-        data: pbSeries.right,
+        data: peRightPercentileSeries,
         symbol: "none",
         connectNulls: false,
         lineStyle: { width: 2.4, color: RIGHT_SERIES_COLOR },
-        endLabel: buildValuationEndLabel(rightLabel),
-        labelLayout: { moveOverlap: "shiftY" },
         emphasis: { focus: "series" },
       },
       {
-        name: `${leftLabel} 股息率`,
+        name: "30分位线",
+        type: "line",
+        xAxisIndex: 2,
+        yAxisIndex: 2,
+        data: buildFlatReference(masterDates, 30),
+        symbol: "none",
+        lineStyle: { width: 1.1, type: "dashed", color: "#2a9d8f" },
+        emphasis: { disabled: true },
+      },
+      {
+        name: "70分位线",
+        type: "line",
+        xAxisIndex: 2,
+        yAxisIndex: 2,
+        data: buildFlatReference(masterDates, 70),
+        symbol: "none",
+        lineStyle: { width: 1.1, type: "dashed", color: "#d9485f" },
+        emphasis: { disabled: true },
+      },
+      {
+        name: `${leftLabel} PB 百分位`,
         type: "line",
         xAxisIndex: 3,
         yAxisIndex: 3,
-        data: dividendSeries.left,
+        data: pbLeftPercentileSeries,
         symbol: "none",
         connectNulls: false,
         lineStyle: { width: 2.4, color: LEFT_SERIES_COLOR },
-        endLabel: buildValuationEndLabel(leftLabel),
-        labelLayout: { moveOverlap: "shiftY" },
         emphasis: { focus: "series" },
       },
       {
-        name: `${rightLabel} 股息率`,
+        name: "30分位线",
         type: "line",
         xAxisIndex: 3,
-        yAxisIndex: 6,
-        data: dividendSeries.right,
+        yAxisIndex: 3,
+        data: buildFlatReference(masterDates, 30),
+        symbol: "none",
+        lineStyle: { width: 1.1, type: "dashed", color: "#2a9d8f" },
+        emphasis: { disabled: true },
+      },
+      {
+        name: "70分位线",
+        type: "line",
+        xAxisIndex: 3,
+        yAxisIndex: 3,
+        data: buildFlatReference(masterDates, 70),
+        symbol: "none",
+        lineStyle: { width: 1.1, type: "dashed", color: "#d9485f" },
+        emphasis: { disabled: true },
+      },
+      {
+        name: `${rightLabel} PB 百分位`,
+        type: "line",
+        xAxisIndex: 4,
+        yAxisIndex: 4,
+        data: pbRightPercentileSeries,
         symbol: "none",
         connectNulls: false,
         lineStyle: { width: 2.4, color: RIGHT_SERIES_COLOR },
-        endLabel: buildValuationEndLabel(rightLabel),
-        labelLayout: { moveOverlap: "shiftY" },
         emphasis: { focus: "series" },
+      },
+      {
+        name: "30分位线",
+        type: "line",
+        xAxisIndex: 4,
+        yAxisIndex: 4,
+        data: buildFlatReference(masterDates, 30),
+        symbol: "none",
+        lineStyle: { width: 1.1, type: "dashed", color: "#2a9d8f" },
+        emphasis: { disabled: true },
+      },
+      {
+        name: "70分位线",
+        type: "line",
+        xAxisIndex: 4,
+        yAxisIndex: 4,
+        data: buildFlatReference(masterDates, 70),
+        symbol: "none",
+        lineStyle: { width: 1.1, type: "dashed", color: "#d9485f" },
+        emphasis: { disabled: true },
       },
     ],
   };

@@ -26,10 +26,11 @@ class StyleRotationParams:
 
 
 VALUATION_METRICS = {
-    "pe": {"column": "pe_ttm", "label": "PE"},
-    "pb": {"column": "pb", "label": "PB"},
-    "dividend_yield": {"column": "dividend_yield", "label": "股息率"},
+    "pe": {"column": "pe_ttm", "label": "PE", "percentile_column": "pe_percentile"},
+    "pb": {"column": "pb", "label": "PB", "percentile_column": "pb_percentile"},
+    "dividend_yield": {"column": "dividend_yield", "label": "股息率", "percentile_column": None},
 }
+
 
 
 def calculate_style_rotation(
@@ -170,11 +171,17 @@ def _build_metric_comparison(
     end: date | None,
 ) -> dict[str, object]:
     metric = VALUATION_METRICS[metric_key]
-    column = getattr(IndexValuation, metric["column"])
+    value_column = getattr(IndexValuation, metric["column"])
+    percentile_name = metric["percentile_column"]
+    percentile_column = getattr(IndexValuation, percentile_name) if percentile_name else None
 
-    query = select(IndexValuation.trade_date, IndexValuation.symbol, column).where(
+    query_columns = [IndexValuation.trade_date, IndexValuation.symbol, value_column]
+    if percentile_column is not None:
+        query_columns.append(percentile_column)
+
+    query = select(*query_columns).where(
         IndexValuation.symbol.in_([left_symbol, right_symbol]),
-        column.is_not(None),
+        value_column.is_not(None),
     )
     if start:
         query = query.where(IndexValuation.trade_date >= start)
@@ -184,14 +191,20 @@ def _build_metric_comparison(
 
     rows = session.execute(query).all()
     values_by_symbol: dict[str, dict[str, float]] = {left_symbol: {}, right_symbol: {}}
-    for trade_date, symbol, value in rows:
+    percentile_by_symbol: dict[str, dict[str, float | None]] = {left_symbol: {}, right_symbol: {}}
+    for row in rows:
+        trade_date, symbol, value = row[:3]
+        percentile_value = row[3] if percentile_column is not None and len(row) > 3 else None
         values_by_symbol.setdefault(symbol, {})[trade_date.isoformat()] = round(float(value), 6)
+        if percentile_column is not None:
+            percentile_by_symbol.setdefault(symbol, {})[trade_date.isoformat()] = (
+                round(float(percentile_value), 6) if percentile_value is not None else None
+            )
 
     all_dates = sorted(set(values_by_symbol[left_symbol]) | set(values_by_symbol[right_symbol]))
     left_values = [values_by_symbol[left_symbol].get(item) for item in all_dates]
     right_values = [values_by_symbol[right_symbol].get(item) for item in all_dates]
-
-    return {
+    result = {
         "label": metric["label"],
         "dates": all_dates,
         "left": left_values,
@@ -199,6 +212,10 @@ def _build_metric_comparison(
         "left_count": len(values_by_symbol[left_symbol]),
         "right_count": len(values_by_symbol[right_symbol]),
     }
+    if percentile_column is not None:
+        result["left_percentile"] = [percentile_by_symbol[left_symbol].get(item) for item in all_dates]
+        result["right_percentile"] = [percentile_by_symbol[right_symbol].get(item) for item in all_dates]
+    return result
 
 
 def _build_valuation_comparison(

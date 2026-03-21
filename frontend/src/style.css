@@ -613,7 +613,7 @@ select {
 .chart-card-composite {
   padding: 14px;
   height: auto;
-  min-height: 1180px;
+  min-height: 1360px;
   background:
     linear-gradient(180deg, rgba(255, 252, 247, 0.96), rgba(249, 243, 233, 0.94)),
     radial-gradient(circle at top right, rgba(242, 189, 95, 0.14), transparent 24%);
@@ -626,7 +626,7 @@ select {
 }
 
 .chart-canvas-composite {
-  height: clamp(1120px, calc(100vh - 96px), 1320px);
+  height: clamp(1280px, calc(100vh - 56px), 1500px);
 }
 
 @media (max-width: 960px) {
@@ -678,6 +678,7 @@ select {
   .export-summary-grid {
     grid-template-columns: 1fr;
   }
+
 }
 
 @media (max-width: 640px) {
@@ -712,10 +713,10 @@ select {
 
   .chart-card-composite {
     height: auto;
-    min-height: 960px;
+    min-height: 1180px;
   }
 
   .chart-canvas-composite {
-    height: 980px;
+    height: 1220px;
   }
 }
