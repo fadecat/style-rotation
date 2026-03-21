@@ -15,7 +15,7 @@ from .database import get_session, create_session_factory
 from .models import Instrument
 from .schemas import MarketDataSyncRequest
 from .services.market_data import DataSyncError, get_market_data_status, init_database, seed_default_data, sync_market_data
-from .services.style_rotation import InsufficientDataError, StyleRotationParams, build_style_rotation_response
+from .services.style_rotation import BacktestParams, InsufficientDataError, StyleRotationParams, build_style_rotation_response, run_backtest
 from .services.valuation_upload import SUPPORTED_METRICS, ValuationUploadError, get_valuation_status, upload_valuation_csv
 
 logging.basicConfig(
@@ -226,6 +226,33 @@ def create_app(database_url: str | None = None, seed_demo: bool = True) -> FastA
         except InsufficientDataError:
             return JSONResponse(status_code=404, content={"code": 404, "message": "insufficient data", "data": None})
 
+        return {"code": 200, "message": "success", "data": data}
+
+    @app.get("/api/backtest")
+    def backtest_endpoint(
+        left_symbol: str = Query(default="000852"),
+        right_symbol: str = Query(default="000922"),
+        start_date: date = Query(default=date(2016, 1, 1)),
+        end_date: date = Query(default=date(2026, 3, 20)),
+        return_window: int = Query(default=252, ge=1),
+        session: Session = Depends(get_session),
+    ) -> dict[str, object]:
+        if left_symbol == right_symbol:
+            return JSONResponse(
+                status_code=400,
+                content={"code": 400, "message": "left_symbol and right_symbol must differ", "data": None},
+            )
+        params = BacktestParams(
+            left_symbol=left_symbol,
+            right_symbol=right_symbol,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            return_window=return_window,
+        )
+        try:
+            data = run_backtest(session, params)
+        except InsufficientDataError as exc:
+            return JSONResponse(status_code=404, content={"code": 404, "message": str(exc), "data": None})
         return {"code": 200, "message": "success", "data": data}
 
     return app

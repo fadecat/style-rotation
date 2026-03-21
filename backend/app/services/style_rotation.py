@@ -285,3 +285,257 @@ def build_style_rotation_response(session: Session, params: StyleRotationParams)
             valuation_end,
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Dual-threshold rotation backtest
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class BacktestParams:
+    left_symbol: str
+    right_symbol: str
+    start_date: str
+    end_date: str
+    return_window: int
+
+
+def run_backtest(
+    session: Session,
+    params: BacktestParams,
+) -> dict[str, object]:
+    """Minimal dual-threshold rotation backtest.
+
+    Signal definitions (no MA, no cooldown):
+      buy:  spread[t-1] <= p10[t-1] AND spread[t] > p10[t]
+      sell: spread[t-1] >= p90[t-1] AND spread[t] < p90[t]
+
+    Execution:
+      - Signal fires at t close, position changes from t+1.
+      - Switch costs 0.1 % (one-way).
+      - First signal must be buy; sell before first buy is ignored.
+      - After first buy, position alternates: left <-> right, always full.
+    """
+    query_start = date.fromisoformat(params.start_date) - timedelta(
+        days=max(400, params.return_window + 150)
+    )
+    query_end = date.fromisoformat(params.end_date)
+
+    df_left = _load_price_frame(session, params.left_symbol, query_start, query_end)
+    df_right = _load_price_frame(session, params.right_symbol, query_start, query_end)
+
+    if df_left.empty or df_right.empty:
+        raise InsufficientDataError("symbol data is missing")
+
+    return _calc_backtest(df_left, df_right, params)
+
+
+def _calc_backtest(
+    df_left: pd.DataFrame,
+    df_right: pd.DataFrame,
+    params: BacktestParams,
+) -> dict[str, object]:
+    # --- merge & compute spread / quantiles ---
+    dl = df_left.copy()
+    dr = df_right.copy()
+    dl["trade_date"] = pd.to_datetime(dl["trade_date"])
+    dr["trade_date"] = pd.to_datetime(dr["trade_date"])
+    dl["close"] = dl["close"].astype(float)
+    dr["close"] = dr["close"].astype(float)
+    dl = dl.sort_values("trade_date").reset_index(drop=True)
+    dr = dr.sort_values("trade_date").reset_index(drop=True)
+
+    df = pd.merge(
+        dl[["trade_date", "close"]],
+        dr[["trade_date", "close"]],
+        on="trade_date",
+        how="inner",
+        suffixes=("_left", "_right"),
+    ).sort_values("trade_date").reset_index(drop=True)
+
+    if len(df) < params.return_window + 2:
+        raise InsufficientDataError("not enough data for backtest")
+
+    df["left_ret"] = df["close_left"].pct_change(params.return_window) * 100
+    df["right_ret"] = df["close_right"].pct_change(params.return_window) * 100
+    df["spread"] = df["left_ret"] - df["right_ret"]
+    df = df.dropna(subset=["spread"]).reset_index(drop=True)
+
+    p90 = float(df["spread"].quantile(0.9))
+    p10 = float(df["spread"].quantile(0.1))
+    df["date_str"] = df["trade_date"].dt.strftime("%Y-%m-%d")
+
+    # --- detect raw signals on full history (global fixed P10/P90) ---
+    raw_signals: list[tuple[int, str]] = []  # (index_in_df, "buy"|"sell")
+    for i in range(1, len(df)):
+        prev_s = df["spread"].iloc[i - 1]
+        curr_s = df["spread"].iloc[i]
+
+        if prev_s <= p10 and curr_s > p10:
+            raw_signals.append((i, "buy"))
+        elif prev_s >= p90 and curr_s < p90:
+            raw_signals.append((i, "sell"))
+
+    # --- filter: first must be buy, then strict alternation ---
+    filtered: list[tuple[int, str]] = []
+    for idx, action in raw_signals:
+        if not filtered:
+            if action == "buy":
+                filtered.append((idx, action))
+        else:
+            if action != filtered[-1][1]:
+                filtered.append((idx, action))
+
+    # --- trim to date range ---
+    start_str = params.start_date
+    end_str = params.end_date
+    df_range = df[
+        (df["date_str"] >= start_str) & (df["date_str"] <= end_str)
+    ].reset_index(drop=True)
+
+    if df_range.empty:
+        raise InsufficientDataError("no data in requested date range")
+
+    # Build index mapping: original df index -> df_range index
+    orig_indices = df_range["trade_date"].tolist()
+
+    # --- baselines (from first day of range) ---
+    left_base = float(df_range["close_left"].iloc[0])
+    right_base = float(df_range["close_right"].iloc[0])
+    left_nav_series = (df_range["close_left"] / left_base).round(4).tolist()
+    right_nav_series = (df_range["close_right"] / right_base).round(4).tolist()
+
+    # --- build daily return arrays for range ---
+    left_daily = (df_range["close_left"] / df_range["close_left"].shift(1) - 1).fillna(0.0)
+    right_daily = (df_range["close_right"] / df_range["close_right"].shift(1) - 1).fillna(0.0)
+
+    # --- walk through range, compute strategy nav ---
+    dates_list = df_range["date_str"].tolist()
+    n = len(df_range)
+    nav_series: list[float | None] = [None] * n
+    holding = None  # None | "left" | "right"
+    nav_val = 1.0
+    trades: list[dict] = []
+    FEE = 0.001
+
+    # Map signal dates to range indices for t+1 execution
+    signal_date_to_range_idx: dict[str, int] = {}
+    for i, d in enumerate(dates_list):
+        signal_date_to_range_idx[d] = i
+
+    # Collect signals that fall within or before the range
+    pending_switches: dict[int, str] = {}  # range_idx -> new holding
+    for sig_idx, action in filtered:
+        sig_date = df["date_str"].iloc[sig_idx]
+        # execution is t+1: find the next trading day in range
+        if sig_date in signal_date_to_range_idx:
+            exec_idx = signal_date_to_range_idx[sig_date] + 1
+        elif sig_date < start_str:
+            # signal before range: find first day of range
+            # only matters if it's the last signal before range start
+            continue
+        else:
+            continue
+        if 0 <= exec_idx < n:
+            new_hold = "left" if action == "buy" else "right"
+            pending_switches[exec_idx] = new_hold
+
+    # Also handle signals before range that set initial state
+    last_before = None
+    for sig_idx, action in filtered:
+        sig_date = df["date_str"].iloc[sig_idx]
+        if sig_date < start_str:
+            last_before = (sig_idx, action, sig_date)
+        else:
+            break
+
+    if last_before is not None:
+        _, last_action, last_sig_date = last_before
+        # Check if t+1 of this signal falls within range
+        # Find the day after last_sig_date in df
+        sig_pos_in_df = df[df["date_str"] == last_sig_date].index[0]
+        if sig_pos_in_df + 1 < len(df):
+            exec_date = df["date_str"].iloc[sig_pos_in_df + 1]
+            if exec_date >= start_str and exec_date <= end_str:
+                exec_range_idx = signal_date_to_range_idx.get(exec_date)
+                if exec_range_idx is not None:
+                    pending_switches[exec_range_idx] = "left" if last_action == "buy" else "right"
+            elif exec_date < start_str:
+                # Already executed before range, set initial holding
+                holding = "left" if last_action == "buy" else "right"
+
+    # Walk day by day
+    for i in range(n):
+        if i in pending_switches:
+            new_hold = pending_switches[i]
+            if holding is None:
+                # First entry
+                holding = new_hold
+                nav_val = 1.0
+                nav_val *= (1 - FEE)
+                daily_r = left_daily.iloc[i] if holding == "left" else right_daily.iloc[i]
+                nav_val *= (1 + daily_r)
+                nav_series[i] = round(nav_val, 6)
+                trades.append({
+                    "date": dates_list[i],
+                    "action": "buy",
+                    "nav_before": None,
+                    "nav_after": round(nav_val, 6),
+                })
+            else:
+                # Switch
+                nav_before = round(nav_val, 6)
+                nav_val *= (1 - FEE)
+                holding = new_hold
+                daily_r = left_daily.iloc[i] if holding == "left" else right_daily.iloc[i]
+                nav_val *= (1 + daily_r)
+                nav_series[i] = round(nav_val, 6)
+                action_label = "buy" if holding == "left" else "sell"
+                trades.append({
+                    "date": dates_list[i],
+                    "action": action_label,
+                    "nav_before": nav_before,
+                    "nav_after": round(nav_val, 6),
+                })
+        elif holding is not None:
+            daily_r = left_daily.iloc[i] if holding == "left" else right_daily.iloc[i]
+            nav_val *= (1 + daily_r)
+            nav_series[i] = round(nav_val, 6)
+        # else: still waiting for first buy, nav stays None
+
+    # --- stats ---
+    final_nav = nav_series[-1]
+    total_return = round((final_nav - 1) * 100, 2) if final_nav is not None else None
+
+    # Max drawdown
+    max_dd = 0.0
+    peak = 0.0
+    for v in nav_series:
+        if v is None:
+            continue
+        if v > peak:
+            peak = v
+        dd = (peak - v) / peak if peak > 0 else 0
+        if dd > max_dd:
+            max_dd = dd
+    max_dd_pct = round(max_dd * 100, 2)
+
+    stats = {
+        "total_return_pct": total_return,
+        "final_nav": final_nav,
+        "max_drawdown_pct": max_dd_pct,
+        "trade_count": len(trades),
+        "left_nav_final": left_nav_series[-1],
+        "right_nav_final": right_nav_series[-1],
+        "p90": round(p90, 2),
+        "p10": round(p10, 2),
+    }
+
+    return {
+        "dates": dates_list,
+        "nav": nav_series,
+        "left_nav": left_nav_series,
+        "right_nav": right_nav_series,
+        "trades": trades,
+        "stats": stats,
+    }

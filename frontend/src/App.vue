@@ -28,8 +28,6 @@ use([
 ]);
 
 const API_BASE = "http://127.0.0.1:8000";
-const BUY_ARROW = "path://M512 128l224 320H608v448H416V448H288z";
-const SELL_ARROW = "path://M512 896L288 576h128V128h192v448h128z";
 const LEFT_SERIES_COLOR = "#2563eb";
 const RIGHT_SERIES_COLOR = "#f97316";
 
@@ -949,12 +947,6 @@ function buildCompositeOption() {
   const pbLeftLatest = findLatestMetricSnapshot(pbSeries.left, pbLeftMetric.percentiles);
   const pbRightLatest = findLatestMetricSnapshot(pbSeries.right, pbRightMetric.percentiles);
   const zoomRange = buildDefaultZoomRange(masterDates.length);
-  const buySignals = signals
-    .filter((item) => item.type === "buy")
-    .map((item) => [item.date, item.spread]);
-  const sellSignals = signals
-    .filter((item) => item.type === "sell")
-    .map((item) => [item.date, item.spread]);
   const peLeftPercentileSeries = peLeftMetric.percentiles.map((value, index) => ({
     value,
     rawValue: peSeries.left[index],
@@ -1296,28 +1288,6 @@ function buildCompositeOption() {
         symbol: "none",
         lineStyle: { width: 1.2, type: "dashed", color: "#16a34a" },
         z: 3,
-      },
-      {
-        name: "买入信号",
-        type: "scatter",
-        xAxisIndex: 0,
-        yAxisIndex: 0,
-        data: buySignals,
-        symbol: BUY_ARROW,
-        symbolSize: 16,
-        itemStyle: { color: "#16a34a" },
-        z: 6,
-      },
-      {
-        name: "卖出信号",
-        type: "scatter",
-        xAxisIndex: 0,
-        yAxisIndex: 0,
-        data: sellSignals,
-        symbol: SELL_ARROW,
-        symbolSize: 16,
-        itemStyle: { color: "#dc2626" },
-        z: 6,
       },
       {
         name: `${leftLabel} PE 百分位`,
