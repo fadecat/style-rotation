@@ -11,7 +11,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          framework: ["vue", "axios"],
+          framework: ["vue", "vue-router", "axios"],
           charts: ["echarts/core", "echarts/charts", "echarts/components", "echarts/renderers"],
         },
       },

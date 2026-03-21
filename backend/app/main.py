@@ -228,13 +228,20 @@ def create_app(database_url: str | None = None, seed_demo: bool = True) -> FastA
 
         return {"code": 200, "message": "success", "data": data}
 
+    @app.get("/api/strategies")
+    def strategies_endpoint() -> dict:
+        from .services.backtest_strategies import AVAILABLE_STRATEGIES
+        return {"code": 200, "message": "success", "data": AVAILABLE_STRATEGIES}
+
     @app.get("/api/backtest")
     def backtest_endpoint(
         left_symbol: str = Query(default="000852"),
         right_symbol: str = Query(default="000922"),
         start_date: date = Query(default=date(2016, 1, 1)),
         end_date: date = Query(default=date(2026, 3, 20)),
-        return_window: int = Query(default=252, ge=1),
+        strategy: str = Query(default="ratio_mom20"),
+        fee: float = Query(default=0.001, ge=0, le=0.05),
+        rebalance: str = Query(default="weekly", pattern="^(daily|weekly|monthly)$"),
         session: Session = Depends(get_session),
     ) -> dict[str, object]:
         if left_symbol == right_symbol:
@@ -247,7 +254,9 @@ def create_app(database_url: str | None = None, seed_demo: bool = True) -> FastA
             right_symbol=right_symbol,
             start_date=start_date.isoformat(),
             end_date=end_date.isoformat(),
-            return_window=return_window,
+            strategy=strategy,
+            fee=fee,
+            rebalance=rebalance,
         )
         try:
             data = run_backtest(session, params)
